@@ -140,7 +140,7 @@ def session_interaction() -> None:
 
         # --------- GPT Summary (once) ----------
         if "summary_raw" not in st.session_state:
-            with st.status("تلخيص GPT…", expanded=False):
+            with st.status("تلخيص …", expanded=False):
                 st.session_state.summary_raw = summarize_transcript(
                     st.session_state.transcript
                 )

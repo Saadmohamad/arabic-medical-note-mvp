@@ -2,18 +2,22 @@ from __future__ import annotations
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
+from nlp.utils import normalize_arabic_for_nlp
 
 load_dotenv()
 
 # One shared client for all requests
 client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-SYSTEM_SYMPTOM = "أنت مساعد طبي متخصص في معالجة اللغة. استخرج كلمات مفتاحية للأعراض فقط. لا تضف شرحاً."  # noqa: E501
-SYSTEM_DIAGNOSIS = (
-    "أنت مساعد طبي خبير في التشخيص. اقترح تشخيصات محتملة بناءً على النص."  # noqa: E501
+SYSTEM_SYMPTOM = (
+    "أنت مساعد طبي متخصص في معالجة اللغة. لا تقدم أي تشخيص نهائي – اقترح احتمالات فقط. "
+    "استخرج كلمات مفتاحية للأعراض فقط."
 )
 
-
+SYSTEM_DIAGNOSIS = (
+    "أنت مساعد طبي خبير في التشخيص. لا تقدم أي تشخيص نهائي – اقترح احتمالات فقط. "
+    "اقترح تشخيصات محتملة بناءً على النص."
+)
 # -----------------------------------------------------------------------------
 # 🔑  Public functions
 # -----------------------------------------------------------------------------
@@ -21,15 +25,16 @@ SYSTEM_DIAGNOSIS = (
 
 def extract_symptom_keywords(summary: str, transcript: str) -> str:
     """Return Arabic symptom keywords found in summary + transcript."""
-
+    summary_norm = normalize_arabic_for_nlp(summary)
+    transcript_norm = normalize_arabic_for_nlp(transcript)
     prompt = f"""
     استخرج الكلمات المفتاحية المتعلقة بالأعراض من النص التالي، مفصولة بفواصل:
 
     الملخص:
-    {summary}
+    {summary_norm}
 
     النص الكامل:
-    {transcript}
+    {transcript_norm}
     """
 
     try:
@@ -49,15 +54,17 @@ def extract_symptom_keywords(summary: str, transcript: str) -> str:
 
 def extract_possible_diagnoses(summary: str, transcript: str) -> str:
     """Return possible diagnoses mentioned or implied in the text."""
+    summary_norm = normalize_arabic_for_nlp(summary)
+    transcript_norm = normalize_arabic_for_nlp(transcript)
 
     prompt = f"""
     استناداً إلى الملخص والنص الكامل، حدد أي تشخيصات محتملة تم ذكرها أو الإشارة إليها. قابلها في نقاط مختصرة:
 
     الملخص:
-    {summary}
+    {summary_norm}
 
     النص الكامل:
-    {transcript}
+    {transcript_norm}
     """
 
     try:
