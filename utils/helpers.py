@@ -3,7 +3,6 @@ from __future__ import annotations
 import tempfile
 import textwrap
 from pathlib import Path
-from importlib import resources
 from datetime import date as _date
 from typing import Optional
 
@@ -19,21 +18,20 @@ FONT_CACHE: dict[str, tuple[str, str]] = {}
 
 
 def _get_dejavu_font() -> tuple[str, str]:
+    """Return the bundled DejaVuSans.ttf font for PDF generation."""
     if "dejavu" in FONT_CACHE:
         return FONT_CACHE["dejavu"]
-    try:
-        with resources.path("fpdf.fonts", "DejaVuSans.ttf") as p:
-            FONT_CACHE["dejavu"] = ("DejaVu", str(p))
-            return FONT_CACHE["dejavu"]
-    except Exception:
-        for guess in (
-            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        ):
-            if Path(guess).is_file():
-                FONT_CACHE["dejavu"] = ("DejaVu", guess)
-                return FONT_CACHE["dejavu"]
-        raise FileNotFoundError("Unicode font not found – install DejaVu Sans")
+
+    # Vendored font path relative to this helper module
+    bundled = Path(__file__).parent.parent / "fonts" / "DejaVuSans.ttf"
+    if not bundled.is_file():
+        raise FileNotFoundError(
+            f"Cannot find bundled font at {bundled}. "
+            "Make sure you have downloaded DejaVuSans.ttf into the ./fonts directory."
+        )
+
+    FONT_CACHE["dejavu"] = ("DejaVu", str(bundled))
+    return FONT_CACHE["dejavu"]
 
 
 # -----------------------------------------------------------------------------
