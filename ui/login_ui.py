@@ -1,5 +1,5 @@
 import streamlit as st
-from db.models import create_user, authenticate_user
+from db.models import create_user, authenticate_user, get_user_id, user_exists
 
 
 def clear_session():
@@ -43,18 +43,23 @@ def login_flow():
                 clear_session()
                 st.session_state.logged_in = True
                 st.session_state.user_email = email
+                st.session_state.user_id = get_user_id(email)
                 st.sidebar.success("✅ تم تسجيل الدخول بنجاح!")
                 st.rerun()
             else:
                 st.sidebar.error("❌ البريد الإلكتروني أو كلمة المرور غير صحيحة.")
 
         elif mode == "إنشاء حساب":
-            if email and password:
-                create_user(email, password)
-                st.sidebar.success("✅ تم إنشاء الحساب! يمكنك الآن تسجيل الدخول.")
-            else:
+            if not email or not password:
                 st.sidebar.error("❌ يرجى إدخال البريد الإلكتروني وكلمة المرور.")
-
+            else:
+                if user_exists(email):
+                    st.sidebar.error(
+                        "❌ البريد الإلكتروني مستخدم بالفعل. حاول تسجيل الدخول."
+                    )
+                else:
+                    create_user(email, password)
+                    st.sidebar.success("✅ تم إنشاء الحساب! يمكنك الآن تسجيل الدخول.")
         elif mode == "نسيت كلمة المرور":
             if email:
                 # TODO: Implement your email reset logic here

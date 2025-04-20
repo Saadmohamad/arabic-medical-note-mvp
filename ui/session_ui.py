@@ -37,7 +37,30 @@ SUMMARY_LABELS_AR = [
 
 def _inject_rtl_css() -> None:
     st.markdown(
-        """<style>body,.stApp{direction:rtl;text-align:right}</style>""",
+        """
+        <style>
+        /* Apply RTL direction only to the MAIN CONTENT */
+        div[data-testid="stAppViewContainer"] {
+            direction: rtl !important;
+            text-align: right !important;
+        }
+
+        /* Explicitly ensure the sidebar stays on the left side and remains LTR */
+        section[data-testid="stSidebar"], div[data-testid="stSidebar"] {
+            direction: ltr !important;
+            text-align: left !important;
+            position: fixed !important;
+            left: 0 !important;
+            right: auto !important;
+        }
+
+        /* Ensure sidebar inner elements remain consistently LTR-aligned */
+        [data-testid="stSidebar"] * {
+            direction: ltr !important;
+            text-align: left !important;
+        }
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
@@ -160,6 +183,7 @@ def session_interaction() -> None:
             doc_id = insert_doctor(st.session_state.doctor_name)
             pat_id = insert_patient(st.session_state.patient_name)
             insert_session(
+                st.session_state.user_id,
                 doc_id,
                 pat_id,
                 st.session_state.date_selected,

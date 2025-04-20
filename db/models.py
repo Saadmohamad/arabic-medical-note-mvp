@@ -22,6 +22,20 @@ def get_connection():
 def setup_database():
     conn = get_connection()
     cur = conn.cursor()
+
+    # Create users table FIRST
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """
+    )
+
+    # Then the rest
     cur.execute(
         """
     CREATE TABLE IF NOT EXISTS doctors (
@@ -29,25 +43,30 @@ def setup_database():
         name TEXT UNIQUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    """
+    )
+
+    cur.execute(
+        """
     CREATE TABLE IF NOT EXISTS patients (
         id SERIAL PRIMARY KEY,
         name TEXT UNIQUE,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    """
+    )
+
+    cur.execute(
+        """
     CREATE TABLE IF NOT EXISTS sessions (
         id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
         doctor_id INTEGER REFERENCES doctors(id),
         patient_id INTEGER REFERENCES patients(id),
         date TIMESTAMP,
         transcript TEXT,
         summary TEXT,
         audio_path TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-    CREATE TABLE IF NOT EXISTS users (
-        id SERIAL PRIMARY KEY,
-        email TEXT UNIQUE NOT NULL,
-        password_hash TEXT NOT NULL,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
     """
@@ -117,15 +136,17 @@ def insert_patient(name):
     return patient_id
 
 
-def insert_session(doctor_id, patient_id, date, transcript, summary, audio_path):
+def insert_session(
+    user_id, doctor_id, patient_id, date, transcript, summary, audio_path
+):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO sessions (doctor_id, patient_id, date, transcript, summary, audio_path)
-        VALUES (%s, %s, %s, %s, %s, %s)
-    """,
-        (doctor_id, patient_id, date, transcript, summary, audio_path),
+        INSERT INTO sessions (user_id, doctor_id, patient_id, date, transcript, summary, audio_path)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """,
+        (user_id, doctor_id, patient_id, date, transcript, summary, audio_path),
     )
     conn.commit()
     cur.close()
@@ -142,21 +163,62 @@ def get_patient_names():
     return names
 
 
-def get_recent_sessions(limit=5):
+def get_recent_sessions(user_id, limit=5):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
         """
         SELECT s.date, p.name, s.summary
         FROM sessions s
-        JOIN doctors d ON s.doctor_id = d.id
         JOIN patients p ON s.patient_id = p.id
+        WHERE s.user_id = %s
         ORDER BY s.date DESC
         LIMIT %s
-    """,
-        (limit,),
+        """,
+        (user_id, limit),
     )
     rows = cur.fetchall()
     cur.close()
     conn.close()
     return rows
+
+
+def get_user_id(email: str) -> int:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+    user_id = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return user_id
+
+
+def user_exists(email: str) -> bool:
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM users WHERE email = %s", (email,))
+    exists = cur.fetchone() is not None
+    cur.close()
+    conn.close()
+    return exists
+
+
+def get_session_details_by_index(user_id: int, limit: int = 20):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT s.id, s.date, d.name, p.name, s.transcript, s.summary
+        FROM sessions s
+        JOIN doctors d ON s.doctor_id = d.id
+        JOIN patients p ON s.patient_id = p.id
+        WHERE s.user_id = %s
+        ORDER BY s.date DESC
+        LIMIT %s
+        """,
+        (user_id, limit),
+    )
+    sessions = cur.fetchall()
+    cur.close()
+    conn.close()
+    return sessions
