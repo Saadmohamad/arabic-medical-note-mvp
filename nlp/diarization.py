@@ -1,11 +1,10 @@
-# diarization.py
 import os
 from pyannote.audio import Pipeline
 
 pipeline = Pipeline.from_pretrained(
-    "pyannote/speaker-diarization",
-    use_auth_token=os.getenv("HUGGINGFACE_TOKEN")
+    "pyannote/speaker-diarization", use_auth_token=os.getenv("HUGGINGFACE_TOKEN")
 )
+
 
 def diarize_audio(audio_path: str) -> str:
     """

@@ -1,6 +1,6 @@
 import os
 import streamlit as st
-from db.models import setup_database, get_recent_sessions
+from db.models import setup_database, get_recent_sessions, insert_doctor
 from ui.session_ui import session_interaction
 from ui.auth import recognize_doctor_name_from_voice
 
@@ -9,7 +9,6 @@ required_vars = ["OPENAI_API_KEY", "POSTGRES_DB", "POSTGRES_USER", "POSTGRES_PAS
 for var in required_vars:
     if not os.getenv(var):
         raise EnvironmentError(f"Missing required environment variable: {var}")
-
 
 
 st.set_page_config(page_title="ANE Arabic Medical Note Taker", layout="centered")
@@ -33,13 +32,15 @@ with st.sidebar:
 # Main view logic
 if "new_session" in st.session_state and st.session_state.new_session:
     # Optional voice identification
-    if st.button("🎙️ Identify Doctor by Voice"):
-        try:
-            doctor_name = recognize_doctor_name_from_voice()
-            st.session_state["doctor_name"] = doctor_name
-            st.success(f"Doctor identified as: {doctor_name}")
-        except Exception as e:
-            st.error(str(e))
+    if "doctor_name" not in st.session_state:
+        st.markdown("### 🎙️  التعرف على الطبيب بالصوت")
+        name = recognize_doctor_name_from_voice(
+            ui_prompt="اضغط على الميكروفون، قل اسمك، ثم توقف."
+        )
+        if name:
+            insert_doctor(name)  # persists + gets id
+            st.session_state["doctor_name"] = name
+            st.success(f"تم التحقق من هوية الطبيب: {name}")
 
     # Load session interaction UI
     session_interaction()
