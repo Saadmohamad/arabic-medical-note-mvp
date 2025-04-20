@@ -1,119 +1,151 @@
-# ANE Arabic Medical Note Taker
+# 📝 Arabic Medical Note Taker for Emergency Rooms (ANE)
 
-A Streamlit-based MVP for Arabic-language clinical note-taking, designed to streamline doctor–patient interactions in emergency settings.
+A bilingual Streamlit app for recording, transcribing, summarizing, and analyzing Arabic doctor-patient conversations in emergency rooms. Tailored for Arabic-speaking clinicians, with RTL layout, secure login, and PDF export of clinical notes.
 
 ---
 
 ## 🚀 Features
-- **Automatic Transcription**: Leverage OpenAI Whisper (`whisper-1`) for high-quality Arabic transcription.
-- **AI-Powered Summarization**: Generate structured clinical notes using GPT-4.
-- **Post-Session Analysis**: Extract symptom keywords and suggest possible diagnoses with GPT-4o-mini.
-- **Session Management**: Store doctors, patients, and session data in PostgreSQL.
-- **PDF Export**: Produce downloadable, RTL-formatted clinical summaries and transcripts.
-- **History & Review**: Browse recent sessions via sidebar.
+
+- 🔐 **Secure Login** – Sign up, log in, and manage sessions with email & password
+- 👨‍⚕️ **Doctor–Patient Selection** – Identify session participants and date
+- 🎤 **Audio Recording** – Record patient interviews directly from the browser
+- 🧠 **AI-Powered Processing**:
+  - 🗣️ Whisper for **Arabic speech-to-text**
+  - ✍️ GPT-4 for **structured clinical summaries**
+- 🪴 **Medical NLP Analysis**:
+  - Extracts **symptom keywords**
+  - Suggests **possible diagnoses**
+- 📄 **PDF Export**:
+  - Generate Arabic summaries with transcript
+  - RTL formatting with reshaped font
+- 📂 **Session History**:
+  - Browse past sessions
+  - Edit and re-export summaries
 
 ---
 
-## 📦 Project Structure
+## 🗄️ Workflow
+
+1. 🔐 Login or Sign Up
+2. 📟 Select doctor, patient, and date
+3. 🎤 Record audio
+4. 🧠 AI transcribes and summarizes
+5. 📝 Review and edit the auto-filled summary
+6. 📄 Export as Arabic PDF
+7. 📂 Revisit past sessions anytime
+
+---
+
+## 🩰 Tech Stack
+
+| Layer        | Technology                          |
+|--------------|-------------------------------------|
+| Frontend     | [Streamlit](https://streamlit.io)   |
+| Backend      | PostgreSQL, Custom ORM (Python)     |
+| AI Services  | OpenAI Whisper + GPT-4              |
+| Audio Input  | `streamlit-audiorec`                |
+| PDF Output   | `fpdf2`, `arabic_reshaper`, `bidi`  |
+
+---
+
+## 🛠️ Setup Instructions
+
+### 1. Clone the repo
+
+```bash
+git clone https://github.com/your-org/arabic-medical-note-taker.git
+cd arabic-medical-note-taker
+```
+
+### 2. Install dependencies
+
+```bash
+pip install -r requirements.txt
+```
+
+### 3. Create `.env` file
+
+```env
+OPENAI_API_KEY=your_openai_key
+POSTGRES_DB=your_db
+POSTGRES_USER=your_user
+POSTGRES_PASSWORD=your_password
+POSTGRES_HOST=your_host
+POSTGRES_PORT=5432
+```
+
+### 4. Initialize the database
+
+```python
+from db.models import setup_database
+setup_database()
+```
+
+Or just run the app once – it sets up automatically.
+
+### 5. Run the app
+
+```bash
+streamlit run app.py
+```
+
+---
+
+## 📁 Folder Structure
 
 ```
-arabic_medical_note_mvp/
-├── **app.py**                # Streamlit entry point and sidebar navigation
-├── **requirements.txt**      # Python dependencies
-├── **.env**                  # Environment variables (API keys, DB config)
-│
-├── **ui/**
-│   ├── **auth.py**           # Voice authentication helper (not yet integrated into session flow)
-│   └── **session_ui.py**     # Interactive session UI flow
-│
-├── **nlp/**
-│   ├── **transcribe.py**     # Arabic transcription + speaker tagging
-│   ├── **summarise.py**      # GPT-4 summarization component
-│   ├── **analyse.py**        # Symptom & diagnosis extraction with GPT-4o-mini
-│   └── **utils.py**          # Arabic normalization utilities
-│
-├── **db/**
-│   └── **models.py**         # PostgreSQL schema & CRUD operations
-│
-├── **utils/**
-│   └── **helpers.py**        # PDF export, RTL wrapping, font utilities
-│
-└── **.pre-commit-config.yaml**  # Code formatting & linting hooks
+.
+├── app.py                   # Main app entry
+├── db/                      # User, doctor, patient, session logic
+├── nlp/                     # Transcription, summary, diagnosis
+├── ui/                      # UI flows (login, session wizard)
+├── utils/                   # PDF generation, text helpers
+├── fonts/                   # DejaVuSans.ttf for Arabic support
+├── .env                     # Your API/DB config
+├── requirements.txt
+└── README.md
 ```
 
 ---
 
-## ⚙️ Setup & Installation
+## 🧪 Dev Notes
 
-1. **Clone the repository**
+### Pre-commit Setup
 
-   ```bash
-   git clone https://github.com/your-org/arabic-medical-note-mvp.git
-   cd arabic-medical-note-mvp
-   ```
+```bash
+pre-commit install
+```
 
-2. **Configure environment variables**
+Includes:
 
-   Create a `.env` file in the project root:
+- `black` – formatting
+- `ruff` – linting
+- `mypy` – type checking
 
-   ```dotenv
-   OPENAI_API_KEY=your_openai_key
-   POSTGRES_DB=your_db_name
-   POSTGRES_USER=your_db_user
-   POSTGRES_PASSWORD=your_db_password
-   POSTGRES_HOST=localhost
-   POSTGRES_PORT=5432
-   ```
+### Font Note
 
-3. **Install dependencies**
-
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-4. **Initialize the database**
-
-   Ensure PostgreSQL is running, then start the app (the DB tables will be auto-created):
-
-   ```bash
-   streamlit run app.py
-   ```
+Ensure `fonts/DejaVuSans.ttf` exists. It’s required for Arabic PDF export.
 
 ---
 
-## 🧑‍💻 Usage
+## ✅ TODOs / Roadmap
 
-- **Start a New Session**: Click **Start New Session** in the sidebar.
-- **Doctor & Patient**: Input the doctor's name (Arabic) via text or voice helper.
-- **Record Conversation**: Capture the patient interaction with the audio widget.
-- **Review & Edit**: View full transcript, edit AI-generated summary fields.
-- **Export**: Download a formatted PDF of the clinical note.
-- **History**: Review recent sessions from the sidebar.
-
----
-
-## 🧪 Notes & Requirements
-
-- **Microphone Access**: Required for live recording.
-- **OpenAI Access**: Whisper (`whisper-1`), GPT-4, and GPT-4o-mini models.
-- **PostgreSQL**: Running and accessible per `.env` settings.
-- **RTL Support**: Uses DejaVu Unicode font; ensure font availability.
+- [ ] Password reset via email
+- [ ] Mobile responsiveness
+- [ ] Audio upload support (for pre-recorded .wav/.mp3)
+- [ ] Admin dashboard
+- [ ] Session deletion and search
 
 ---
 
-## 🧑‍🤝‍🧑 Contributors
+## 🙏 Acknowledgments
 
-- **ML & AI Team**: Core development and design.
-- **Streamlit Community**: st-audiorec widget integration.
-
----
-
-## 📬 Feedback & Issues
-
-Please open an issue or contact the ML engineering team for questions or feature requests.
+- [OpenAI](https://openai.com) for Whisper and GPT-4
+- [Streamlit](https://streamlit.io) for the amazing app framework
+- `arabic_reshaper` + `python-bidi` for RTL PDF rendering
 
 ---
 
-## ⚖️ License
+## 📜 License
 
-Distributed under the MIT License. See `LICENSE` for details.
+MIT License
