@@ -1,6 +1,7 @@
 import psycopg2
 import os
 from dotenv import load_dotenv
+from passlib.hash import bcrypt
 
 load_dotenv()
 
@@ -43,11 +44,49 @@ def setup_database():
         audio_path TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
     """
     )
+
     conn.commit()
     cur.close()
     conn.close()
+
+
+def create_user(email: str, password: str) -> int:
+    """Hash the password and insert a new user; returns user id."""
+    pwd_hash = bcrypt.hash(password)
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO users (email, password_hash) VALUES (%s, %s) ON CONFLICT (email) DO NOTHING",
+        (email, pwd_hash),
+    )
+    conn.commit()
+    cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+    user_id = cur.fetchone()[0]
+    cur.close()
+    conn.close()
+    return user_id
+
+
+def authenticate_user(email: str, password: str) -> bool:
+    """Return True if email exists and password matches."""
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT password_hash FROM users WHERE email = %s", (email,))
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not row:
+        return False
+    stored_hash = row[0]
+    return bcrypt.verify(password, stored_hash)
 
 
 def insert_doctor(name):
