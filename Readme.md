@@ -1,92 +1,119 @@
-# 🩺 ANE Arabic Medical Note Taker
+# ANE Arabic Medical Note Taker
 
-This MVP is a **Streamlit-based Arabic-language note-taking app** designed for emergency room (ANE) doctors to record, transcribe, and summarize conversations with patients.
+A Streamlit-based MVP for Arabic-language clinical note-taking, designed to streamline doctor–patient interactions in emergency settings.
+
+---
 
 ## 🚀 Features
-- 🎙️ Live audio recording (Arabic)
-- 🧑‍⚕️ Voice-based doctor identification
-- 📋 Auto transcription using OpenAI Whisper
-- 🧠 Medical summary generation using GPT-4
-- 📈 Post-session analysis (symptom keywords, possible diagnoses)
-- 🗂️ Patient/session management via PostgreSQL
-- 📄 PDF export of structured clinical notes
+- **Automatic Transcription**: Leverage OpenAI Whisper (`whisper-1`) for high-quality Arabic transcription.
+- **AI-Powered Summarization**: Generate structured clinical notes using GPT-4.
+- **Post-Session Analysis**: Extract symptom keywords and suggest possible diagnoses with GPT-4o-mini.
+- **Session Management**: Store doctors, patients, and session data in PostgreSQL.
+- **PDF Export**: Produce downloadable, RTL-formatted clinical summaries and transcripts.
+- **History & Review**: Browse recent sessions via sidebar.
 
 ---
 
-## 📁 Project Structure
-```bash
+## 📦 Project Structure
+
+```
 arabic_medical_note_mvp/
-├── app.py                   # Streamlit app entry point
-├── requirements.txt         # Dependencies
-├── .env                     # API keys and DB config
+├── **app.py**                # Streamlit entry point and sidebar navigation
+├── **requirements.txt**      # Python dependencies
+├── **.env**                  # Environment variables (API keys, DB config)
 │
-├── audio/
-│   └── recorder.py          # Audio recorder widget
-├── db/
-│   └── models.py            # PostgreSQL models & queries
-├── nlp/
-│   ├── transcribe.py        # Arabic transcription
-│   ├── summarize.py         # GPT-based summarization
-│   └── analyze.py           # Symptom & diagnosis extraction
-├── ui/
-│   ├── auth.py              # Voice-based doctor login
-│   └── session_ui.py        # Main session interface
-├── utils/
-│   └── helpers.py           # PDF export and utilities
+├── **ui/**
+│   ├── **auth.py**           # Voice authentication helper (not yet integrated into session flow)
+│   └── **session_ui.py**     # Interactive session UI flow
+│
+├── **nlp/**
+│   ├── **transcribe.py**     # Arabic transcription + speaker tagging
+│   ├── **summarise.py**      # GPT-4 summarization component
+│   ├── **analyse.py**        # Symptom & diagnosis extraction with GPT-4o-mini
+│   └── **utils.py**          # Arabic normalization utilities
+│
+├── **db/**
+│   └── **models.py**         # PostgreSQL schema & CRUD operations
+│
+├── **utils/**
+│   └── **helpers.py**        # PDF export, RTL wrapping, font utilities
+│
+└── **.pre-commit-config.yaml**  # Code formatting & linting hooks
 ```
 
 ---
 
-## ⚙️ Setup
+## ⚙️ Setup & Installation
 
-### 1. Clone the repo
-```bash
-git clone https://github.com/your-org/arabic-medical-note-mvp.git
-cd arabic-medical-note-mvp
-```
+1. **Clone the repository**
 
-### 2. Create a `.env` file
-```ini
-OPENAI_API_KEY=your_openai_key
-POSTGRES_DB=your_db
-POSTGRES_USER=your_user
-POSTGRES_PASSWORD=your_password
-POSTGRES_HOST=localhost
-POSTGRES_PORT=5432
-```
+   ```bash
+   git clone https://github.com/your-org/arabic-medical-note-mvp.git
+   cd arabic-medical-note-mvp
+   ```
 
-### 3. Install dependencies
-```bash
-pip install -r requirements.txt
-```
+2. **Configure environment variables**
 
-### 4. Run the app
-```bash
-streamlit run app.py
-```
+   Create a `.env` file in the project root:
 
----
+   ```dotenv
+   OPENAI_API_KEY=your_openai_key
+   POSTGRES_DB=your_db_name
+   POSTGRES_USER=your_db_user
+   POSTGRES_PASSWORD=your_db_password
+   POSTGRES_HOST=localhost
+   POSTGRES_PORT=5432
+   ```
 
-## 🧪 Notes
-- Requires a working **microphone** for live voice capture.
-- You need a valid **OpenAI API Key** with access to `whisper-1` and `gpt-4`.
-- Make sure **PostgreSQL** is running and accessible.
+3. **Install dependencies**
 
----
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-## 📦 Optional: Docker (coming soon)
-We'll add a Dockerfile for GCP-ready deployment.
+4. **Initialize the database**
+
+   Ensure PostgreSQL is running, then start the app (the DB tables will be auto-created):
+
+   ```bash
+   streamlit run app.py
+   ```
 
 ---
 
-## 🧑‍💻 Authors & Credits
-Built by ML & AI team for medical documentation automation. Inspired by real ER doctor workflows.
+## 🧑‍💻 Usage
+
+- **Start a New Session**: Click **Start New Session** in the sidebar.
+- **Doctor & Patient**: Input the doctor's name (Arabic) via text or voice helper.
+- **Record Conversation**: Capture the patient interaction with the audio widget.
+- **Review & Edit**: View full transcript, edit AI-generated summary fields.
+- **Export**: Download a formatted PDF of the clinical note.
+- **History**: Review recent sessions from the sidebar.
 
 ---
 
-## 📬 Feedback / Issues
-Please open an issue or contact the ML engineering team.
+## 🧪 Notes & Requirements
+
+- **Microphone Access**: Required for live recording.
+- **OpenAI Access**: Whisper (`whisper-1`), GPT-4, and GPT-4o-mini models.
+- **PostgreSQL**: Running and accessible per `.env` settings.
+- **RTL Support**: Uses DejaVu Unicode font; ensure font availability.
 
 ---
 
-> Built for Arabic medical excellence 🇸🇦
+## 🧑‍🤝‍🧑 Contributors
+
+- **ML & AI Team**: Core development and design.
+- **Streamlit Community**: st-audiorec widget integration.
+
+---
+
+## 📬 Feedback & Issues
+
+Please open an issue or contact the ML engineering team for questions or feature requests.
+
+---
+
+## ⚖️ License
+
+Distributed under the MIT License. See `LICENSE` for details.
