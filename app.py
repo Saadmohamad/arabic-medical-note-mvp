@@ -20,7 +20,7 @@ if not login_flow():
     st.warning("⚠️ Please log in first.")
     st.stop()
 
-st.title("📋 Emergency Medical Note Taker (ANE) - English")
+st.title("📋 Emergency Medical Note Taker (ANE) - Arabic")
 
 # Navigation
 view_choice = st.sidebar.radio("Go to:", ("New Session", "📂 Past Sessions"))

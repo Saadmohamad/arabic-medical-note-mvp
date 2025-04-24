@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
-from nlp.utils import normalize_arabic_for_nlp  # same helper you already import
 
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
@@ -49,8 +48,8 @@ def extract_symptom_keywords(
     The caller passes Arabic text; the function normalises it for NLP, then
     asks GPT to surface only the symptom terms and translate them.
     """
-    summary_norm = normalize_arabic_for_nlp(summary)
-    transcript_norm = normalize_arabic_for_nlp(transcript)
+    summary_norm = summary
+    transcript_norm = transcript
 
     user_prompt = (
         "The following text is in Arabic. Read it carefully and reply ONLY "
@@ -87,8 +86,8 @@ def extract_possible_diagnoses(
 
     Results are suggestions, not definitive conclusions.
     """
-    summary_norm = normalize_arabic_for_nlp(summary)
-    transcript_norm = normalize_arabic_for_nlp(transcript)
+    summary_norm = summary
+    transcript_norm = transcript
 
     user_prompt = (
         "The following content is in Arabic. Read it carefully and reply in "

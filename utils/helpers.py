@@ -90,7 +90,7 @@ def export_summary_pdf(
     # ------------ Arabic transcript ---------
     if transcript:
         pdf.ln(6)
-        for seg in _wrap_rtl("النص الكامل:"):  # “Full transcript:” in Arabic
+        for seg in _wrap_rtl("Full Transcript:"):  # “Full transcript:” in Arabic
             pdf.cell(0, 8, seg, ln=1, align="R")
         pdf.ln(2)
         for raw in transcript.splitlines():
