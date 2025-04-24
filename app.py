@@ -1,28 +1,32 @@
+# Converted English version of Arabic Medical Note-Taker MVP
+# Complete translation from Arabic to English across UI text, notes, and labels
+# Translates app interface, labels, instructions, and generated outputs
+
 import streamlit as st
 from db.models import setup_database, get_session_details_by_index
 from ui.session_ui import (
     session_interaction,
     _parse_structured_summary,
     _combine_structured_summary,
-    SUMMARY_LABELS_AR,
+    SUMMARY_LABELS_EN,  # Updated
 )
 from ui.login_ui import login_flow
 from utils.helpers import export_summary_pdf
 
 setup_database()
-st.set_page_config(page_title="ANE Arabic Medical Note Taker", layout="centered")
+st.set_page_config(page_title="ANE English Medical Note Taker", layout="centered")
 
 if not login_flow():
-    st.warning("⚠️ الرجاء تسجيل الدخول أولًا.")
+    st.warning("⚠️ Please log in first.")
     st.stop()
 
-st.title("📋 مدوّن الملاحظات الطبية بالعربية للطوارئ (ANE)")
+st.title("📋 Emergency Medical Note Taker (ANE) - English")
 
 # Navigation
-view_choice = st.sidebar.radio("انتقل إلى:", ("جلسة جديدة", "📂 الجلسات السابقة"))
+view_choice = st.sidebar.radio("Go to:", ("New Session", "📂 Past Sessions"))
 
 # ----------------- Page: New Session ------------------
-if view_choice == "جلسة جديدة":
+if view_choice == "New Session":
 
     def reset_session_state_for_new_session():
         keys_to_clear = [
@@ -42,7 +46,7 @@ if view_choice == "جلسة جديدة":
         for key in keys_to_clear:
             st.session_state.pop(key, None)
 
-    if st.sidebar.button("🔁 بدء جلسة جديدة"):
+    if st.sidebar.button("🔁 Start New Session"):
         reset_session_state_for_new_session()
         st.session_state["new_session"] = True
         st.rerun()
@@ -51,12 +55,12 @@ if view_choice == "جلسة جديدة":
         session_interaction()
 
 # ----------------- Page: Past Sessions ------------------
-elif view_choice == "📂 الجلسات السابقة":
-    st.header("📂 الجلسات السابقة")
+elif view_choice == "📂 Past Sessions":
+    st.header("📂 Previous Sessions")
 
     all_sessions = get_session_details_by_index(st.session_state.user_id)
     if not all_sessions:
-        st.info("لا توجد جلسات محفوظة.")
+        st.info("No saved sessions found.")
         st.stop()
 
     session_labels = [
@@ -64,7 +68,7 @@ elif view_choice == "📂 الجلسات السابقة":
         for row in all_sessions
     ]
     selected_idx = st.selectbox(
-        "اختر جلسة سابقة:",
+        "Select a previous session:",
         range(len(session_labels)),
         format_func=lambda i: session_labels[i],
     )
@@ -73,24 +77,24 @@ elif view_choice == "📂 الجلسات السابقة":
         selected_idx
     ]
 
-    st.subheader("📄 النص الكامل")
+    st.subheader("📄 Full Transcript")
     st.write(transcript)
 
-    st.subheader("📝 ملخص الجلسة")
+    st.subheader("📝 Session Summary")
     sections = _parse_structured_summary(summary)
     updated: dict[str, str] = {}
-    for lbl in SUMMARY_LABELS_AR:
+    for lbl in SUMMARY_LABELS_EN:
         key = f"past_summary_{lbl}"
         updated[lbl] = st.text_area(
             lbl + ":", value=sections.get(lbl, ""), key=key, height=90
         )
 
-    if st.button("📄 تنزيل PDF", key="past_pdf_btn"):
+    if st.button("📄 Download PDF", key="past_pdf_btn"):
         combined = _combine_structured_summary(updated)
         pdf_path = export_summary_pdf(
             doctor_name, patient_name, date_sel, combined, transcript
         )
         with open(pdf_path, "rb") as fp:
             st.download_button(
-                "📥 تنزيل الملخص", fp, file_name="summary.pdf", key="download_btn"
+                "📥 Download Summary", fp, file_name="summary.pdf", key="download_btn"
             )

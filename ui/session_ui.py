@@ -1,16 +1,14 @@
 from __future__ import annotations
-
-
 import datetime
 import tempfile
 import re
 import streamlit as st
 
 try:
-    from st_audiorec import st_audiorec  # type: ignore
+    from st_audiorec import st_audiorec
 except ModuleNotFoundError:
     st.error(
-        "❗ `streamlit-audiorec` not installed. Run `pip install streamlit-audiorec`. "
+        "❗ `streamlit-audiorec` not installed. Run `pip install streamlit-audiorec`."
     )
     st.stop()
 
@@ -22,30 +20,22 @@ from utils.helpers import export_summary_pdf
 
 __all__ = ["session_interaction"]
 
-SUMMARY_LABELS_AR = [
-    "شكوى المريض",
-    "ملاحظات سريرية",
-    "التشخيص (إذا وُجد)",
-    "خطة العلاج",
+SUMMARY_LABELS_EN = [
+    "Patient Complaint",
+    "Clinical Notes",
+    "Diagnosis (if any)",
+    "Treatment Plan",
 ]
 
 
-# -----------------------------------------------------------------------------
-# 🖌️  Helpers
-# -----------------------------------------------------------------------------
-
-
-def _inject_rtl_css() -> None:
+def _inject_ltr_css() -> None:
     st.markdown(
         """
         <style>
-        /* Apply RTL direction only to the MAIN CONTENT */
         div[data-testid="stAppViewContainer"] {
-            direction: rtl !important;
-            text-align: right !important;
+            direction: ltr !important;
+            text-align: left !important;
         }
-
-        /* Explicitly ensure the sidebar stays on the left side and remains LTR */
         section[data-testid="stSidebar"], div[data-testid="stSidebar"] {
             direction: ltr !important;
             text-align: left !important;
@@ -53,8 +43,6 @@ def _inject_rtl_css() -> None:
             left: 0 !important;
             right: auto !important;
         }
-
-        /* Ensure sidebar inner elements remain consistently LTR-aligned */
         [data-testid="stSidebar"] * {
             direction: ltr !important;
             text-align: left !important;
@@ -70,11 +58,11 @@ def _clean_line(line: str) -> str:
 
 
 def _parse_structured_summary(text: str) -> dict[str, str]:
-    sections: dict[str, str] = {lbl: "" for lbl in SUMMARY_LABELS_AR}
+    sections: dict[str, str] = {lbl: "" for lbl in SUMMARY_LABELS_EN}
     current: str | None = None
     for raw in text.splitlines():
         line = _clean_line(raw)
-        for lbl in SUMMARY_LABELS_AR:
+        for lbl in SUMMARY_LABELS_EN:
             if line.startswith(lbl):
                 current = lbl
                 parts = line.split(":", 1)
@@ -90,28 +78,23 @@ def _combine_structured_summary(sections: dict[str, str]) -> str:
     return "\n".join(f"- {lbl}: {val.strip()}" for lbl, val in sections.items())
 
 
-# -----------------------------------------------------------------------------
-# 🩺  UI Flow
-# -----------------------------------------------------------------------------
-
-
 def session_interaction() -> None:
-    _inject_rtl_css()
+    _inject_ltr_css()
 
     if "wizard_step" not in st.session_state:
         st.session_state.wizard_step = 1
 
-    # ------------------------------ STEP 1 ----------------------------------
+    # Step 1: Identify doctor & patient
     if st.session_state.wizard_step == 1:
-        st.subheader("🩺 تحديد الطبيب والمريض")
-        doctor_name = st.text_input("👨‍⚕️ اسم الطبيب (بالعربية)")
+        st.subheader("🩺 Doctor & Patient Details")
+        doctor_name = st.text_input("👨‍⚕️ Doctor's Name")
         patient_sel = st.selectbox(
-            "🧑‍🤝‍🧑 اختر المريض", options=[""] + get_patient_names()
+            "🧑‍🤝‍🧑 Select Patient", options=[""] + get_patient_names()
         )
         if not patient_sel:
-            patient_sel = st.text_input("أو أدخل اسم مريض جديد (بالعربية)")
-        date_sel = st.date_input("📅 التاريخ", value=datetime.date.today())
-        if st.button("التالي ➡️", disabled=not doctor_name):
+            patient_sel = st.text_input("Or enter a new patient name")
+        date_sel = st.date_input("📅 Date", value=datetime.date.today())
+        if st.button("Next ➡️", disabled=not doctor_name):
             st.session_state.update(
                 {
                     "doctor_name": doctor_name,
@@ -123,14 +106,14 @@ def session_interaction() -> None:
             st.rerun()
         return
 
-    # ------------------------------ STEP 2 ----------------------------------
+    # Step 2: Record audio
     if st.session_state.wizard_step == 2:
-        st.subheader("🎙️ تسجيل الجلسة الصوتية")
+        st.subheader("🎙️ Record Session")
         status = st.empty()
         bytes_rec = st_audiorec()
         if bytes_rec is None:
             status.markdown(
-                "<span style='color:red;font-size:24px;animation:blinker 1s infinite'>●</span> جارٍ التسجيل…",
+                "<span style='color:red;font-size:24px;animation:blinker 1s infinite'>●</span> Recording...",
                 unsafe_allow_html=True,
             )
             st.markdown(
@@ -138,39 +121,36 @@ def session_interaction() -> None:
                 unsafe_allow_html=True,
             )
         else:
-            status.success("تم تسجيل المقطع ✔️")
+            status.success("Recording complete ✔️")
         if bytes_rec and st.session_state.get("audio_bytes") != bytes_rec:
             st.session_state.audio_bytes = bytes_rec
             with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
                 tmp.write(bytes_rec)
                 st.session_state.audio_file_path = tmp.name
         st.button(
-            "التالي ➡️",
+            "Next ➡️",
             disabled="audio_file_path" not in st.session_state,
             on_click=lambda: st.session_state.update({"wizard_step": 3}),
         )
         return
 
-    # ------------------------------ STEP 3 ----------------------------------
+    # Step 3: Process and summarize
     if st.session_state.wizard_step == 3:
-        st.subheader("📤 معالجة الصوت")
+        st.subheader("📤 Process Audio")
         audio_path: str = st.session_state.audio_file_path  # type: ignore
 
-        # --------- Transcription (once) ---------
         if "transcript" not in st.session_state:
-            with st.status("تفريغ الصوت…", expanded=False):
+            with st.status("Transcribing…", expanded=False):
                 st.session_state.transcript = transcribe_audio(audio_path)
 
-        # --------- GPT Summary (once) ----------
         if "summary_raw" not in st.session_state:
-            with st.status("تلخيص …", expanded=False):
+            with st.status("Summarizing…", expanded=False):
                 st.session_state.summary_raw = summarize_transcript(
                     st.session_state.transcript
                 )
 
-        # --------- Auto‑analysis (once) --------
         if not st.session_state.get("analysis_ready"):
-            with st.spinner("تحليل الجلسة تلقائياً…"):
+            with st.spinner("Running AI analysis…"):
                 st.session_state.keywords = extract_symptom_keywords(
                     st.session_state.summary_raw, st.session_state.transcript
                 )
@@ -179,7 +159,6 @@ def session_interaction() -> None:
                 )
                 st.session_state.analysis_ready = True
 
-            # Persist transcription & summary only once
             doc_id = insert_doctor(st.session_state.doctor_name)
             pat_id = insert_patient(st.session_state.patient_name)
             insert_session(
@@ -191,35 +170,26 @@ def session_interaction() -> None:
                 st.session_state.summary_raw,
                 audio_path,
             )
-            st.success("✅ تم حفظ الجلسة!")
+            st.success("✅ Session saved!")
 
-        # ---------------- Transcript ----------------
-        st.markdown("### 📄 النص الكامل")
+        st.markdown("### 📄 Full Transcript")
         st.write(st.session_state.transcript)
 
-        # ---------------- Editable summary ----------------
-        st.markdown("### 📝 حرر الملخص")
-        st.info(
-            "تم ملء الحقول تلقائياً باستخدام تحليل الذكاء الاصطناعي. يمكنك تعديلها يدويًا."
-        )
+        st.markdown("### 📝 Edit Summary")
+        st.info("The fields below are AI-generated. You may edit them as needed.")
 
         sections = _parse_structured_summary(st.session_state.summary_raw)
-        sections["ملاحظات سريرية"] = (
-            sections.get("ملاحظات سريرية", "")
-            + "\nالأعراض: "
-            + st.session_state.keywords
-        ).strip()
-        sections["التشخيص (إذا وُجد)"] = st.session_state.diagnoses
+        sections["Clinical Notes"] += "\nSymptoms: " + st.session_state.keywords
+        sections["Diagnosis (if any)"] = st.session_state.diagnoses
 
         updated: dict[str, str] = {}
-        for lbl in SUMMARY_LABELS_AR:
+        for lbl in SUMMARY_LABELS_EN:
             key = f"summary_{lbl}"
             updated[lbl] = st.text_area(
-                lbl + ":", value=sections.get(lbl, ""), key=key, height=90
+                f"{lbl}:", value=sections.get(lbl, ""), key=key, height=90
             )
 
-        # --------------- Export PDF -----------------------
-        if st.button("📄 تصدير PDF"):
+        if st.button("📄 Export PDF"):
             combined = _combine_structured_summary(updated)
             pdf_path = export_summary_pdf(
                 st.session_state.doctor_name,
@@ -229,5 +199,5 @@ def session_interaction() -> None:
                 st.session_state.transcript,
             )
             with open(pdf_path, "rb") as fp:
-                st.download_button("📥 تنزيل الملخص", fp, file_name="summary.pdf")
+                st.download_button("📥 Download Summary", fp, file_name="summary.pdf")
         return

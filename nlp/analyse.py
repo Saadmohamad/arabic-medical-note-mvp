@@ -1,82 +1,112 @@
 from __future__ import annotations
+
 import os
 from dotenv import load_dotenv
 from openai import OpenAI
-from nlp.utils import normalize_arabic_for_nlp
+from nlp.utils import normalize_arabic_for_nlp  # same helper you already import
 
 load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise RuntimeError("OPENAI_API_KEY missing from env")
 
-# One shared client for all requests
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=api_key)
 
-SYSTEM_SYMPTOM = (
-    "أنت مساعد طبي متخصص في معالجة اللغة. لا تقدم أي تشخيص نهائي – اقترح احتمالات فقط. "
-    "استخرج كلمات مفتاحية للأعراض فقط."
+# --------------------------------------------------------------------------- #
+#  📜  System instructions (English answers only)                             #
+# --------------------------------------------------------------------------- #
+
+SYSTEM_SYMPTOM_EN = (
+    "You are a clinical language assistant. "
+    "Extract **only** symptom keywords from the user text, "
+    "translate them to English, and return them as a comma-separated list. "
+    "Do not add any commentary, diagnosis, or Arabic words."
 )
 
-SYSTEM_DIAGNOSIS = (
-    "أنت مساعد طبي خبير في التشخيص. لا تقدم أي تشخيص نهائي – اقترح احتمالات فقط. "
-    "اقترح تشخيصات محتملة بناءً على النص."
+SYSTEM_DIAGNOSIS_EN = (
+    "You are an expert medical assistant. "
+    "Suggest plausible differential diagnoses **in English** based solely on "
+    "the user text. List each diagnosis on its own line with no extra prose. "
+    "Do not give definitive conclusions and do not include Arabic words."
 )
-# -----------------------------------------------------------------------------
-# 🔑  Public functions
-# -----------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------- #
+#  🔑  Public helpers                                                         #
+# --------------------------------------------------------------------------- #
 
 
-def extract_symptom_keywords(summary: str, transcript: str) -> str:
-    """Return Arabic symptom keywords found in summary + transcript."""
+def extract_symptom_keywords(
+    summary: str,
+    transcript: str,
+    *,
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.2,
+    max_tokens: int = 128,
+) -> str:
+    """
+    Return English symptom keywords found in an Arabic summary + transcript.
+
+    The caller passes Arabic text; the function normalises it for NLP, then
+    asks GPT to surface only the symptom terms and translate them.
+    """
     summary_norm = normalize_arabic_for_nlp(summary)
     transcript_norm = normalize_arabic_for_nlp(transcript)
-    prompt = f"""
-    استخرج الكلمات المفتاحية المتعلقة بالأعراض من النص التالي، مفصولة بفواصل:
 
-    الملخص:
-    {summary_norm}
-
-    النص الكامل:
-    {transcript_norm}
-    """
+    user_prompt = (
+        "The following text is in Arabic. Read it carefully and reply ONLY "
+        "with symptom keywords translated into English, comma-separated.\n\n"
+        f"Arabic summary:\n{summary_norm}\n\nArabic transcript:\n{transcript_norm}"
+    )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # cheaper + fast; change if needed
+        resp = client.chat.completions.create(
+            model=model,
             messages=[
-                {"role": "system", "content": SYSTEM_SYMPTOM},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": SYSTEM_SYMPTOM_EN},
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=128,
-            temperature=0.2,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
-        return response.choices[0].message.content.strip()
-    except Exception as exc:  # pragma: no cover – surfaced to UI
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
         raise RuntimeError(f"Symptom keyword extraction failed: {exc}") from exc
 
 
-def extract_possible_diagnoses(summary: str, transcript: str) -> str:
-    """Return possible diagnoses mentioned or implied in the text."""
+def extract_possible_diagnoses(
+    summary: str,
+    transcript: str,
+    *,
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.3,
+    max_tokens: int = 160,
+) -> str:
+    """
+    Return a line-by-line English list of *possible* diagnoses mentioned
+    or implied in the Arabic summary + transcript.
+
+    Results are suggestions, not definitive conclusions.
+    """
     summary_norm = normalize_arabic_for_nlp(summary)
     transcript_norm = normalize_arabic_for_nlp(transcript)
 
-    prompt = f"""
-    استناداً إلى الملخص والنص الكامل، حدد أي تشخيصات محتملة تم ذكرها أو الإشارة إليها. قابلها في نقاط مختصرة:
-
-    الملخص:
-    {summary_norm}
-
-    النص الكامل:
-    {transcript_norm}
-    """
+    user_prompt = (
+        "The following content is in Arabic. Read it carefully and reply in "
+        "English only. List any possible diagnoses that were mentioned or "
+        "hinted at, one per line, without additional commentary.\n\n"
+        f"Arabic summary:\n{summary_norm}\n\nArabic transcript:\n{transcript_norm}"
+    )
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
+        resp = client.chat.completions.create(
+            model=model,
             messages=[
-                {"role": "system", "content": SYSTEM_DIAGNOSIS},
-                {"role": "user", "content": prompt},
+                {"role": "system", "content": SYSTEM_DIAGNOSIS_EN},
+                {"role": "user", "content": user_prompt},
             ],
-            max_tokens=160,
-            temperature=0.3,
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
-        return response.choices[0].message.content.strip()
-    except Exception as exc:  # pragma: no cover
+        return resp.choices[0].message.content.strip()
+    except Exception as exc:
         raise RuntimeError(f"Diagnosis extraction failed: {exc}") from exc

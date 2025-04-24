@@ -13,60 +13,56 @@ def login_flow():
     Handles user login, signup, and logout.
     Returns True if the user is authenticated.
     """
-    st.sidebar.header("🔐 الحساب")
+    st.sidebar.header("🔐 Account")
 
     if "logged_in" not in st.session_state:
         st.session_state.logged_in = False
         st.session_state.user_email = ""
 
     if st.session_state.logged_in:
-        st.sidebar.success(f"مسجل دخول: {st.session_state.user_email}")
-        if st.sidebar.button("تسجيل الخروج"):
+        st.sidebar.success(f"Logged in as: {st.session_state.user_email}")
+        if st.sidebar.button("Log Out"):
             clear_session()
             st.rerun()
         return True
 
-    mode = st.sidebar.radio(
-        "اختر الإجراء:", ("تسجيل الدخول", "إنشاء حساب", "نسيت كلمة المرور")
-    )
+    mode = st.sidebar.radio("Select Action:", ("Login", "Sign Up", "Forgot Password"))
+    email = st.sidebar.text_input("📧 Email")
 
-    email = st.sidebar.text_input("📧 البريد الإلكتروني")
+    if mode in ["Login", "Sign Up"]:
+        password = st.sidebar.text_input("🔑 Password", type="password")
 
-    if mode in ["تسجيل الدخول", "إنشاء حساب"]:
-        password = st.sidebar.text_input("🔑 كلمة المرور", type="password")
-
-    action_btn = st.sidebar.button("متابعة")
+    action_btn = st.sidebar.button("Continue")
 
     if action_btn:
-        if mode == "تسجيل الدخول":
+        if mode == "Login":
             if authenticate_user(email, password):
                 clear_session()
                 st.session_state.logged_in = True
                 st.session_state.user_email = email
                 st.session_state.user_id = get_user_id(email)
-                st.sidebar.success("✅ تم تسجيل الدخول بنجاح!")
+                st.sidebar.success("✅ Logged in successfully!")
                 st.rerun()
             else:
-                st.sidebar.error("❌ البريد الإلكتروني أو كلمة المرور غير صحيحة.")
+                st.sidebar.error("❌ Incorrect email or password.")
 
-        elif mode == "إنشاء حساب":
+        elif mode == "Sign Up":
             if not email or not password:
-                st.sidebar.error("❌ يرجى إدخال البريد الإلكتروني وكلمة المرور.")
+                st.sidebar.error("❌ Please enter both email and password.")
             else:
                 if user_exists(email):
-                    st.sidebar.error(
-                        "❌ البريد الإلكتروني مستخدم بالفعل. حاول تسجيل الدخول."
-                    )
+                    st.sidebar.error("❌ Email already in use. Try logging in.")
                 else:
                     create_user(email, password)
-                    st.sidebar.success("✅ تم إنشاء الحساب! يمكنك الآن تسجيل الدخول.")
-        elif mode == "نسيت كلمة المرور":
+                    st.sidebar.success("✅ Account created! You can now log in.")
+
+        elif mode == "Forgot Password":
             if email:
                 # TODO: Implement your email reset logic here
                 st.sidebar.info(
-                    "📩 إذا كان البريد الإلكتروني مسجلاً ستصلك التعليمات قريباً."
+                    "📩 If the email is registered, reset instructions will be sent."
                 )
             else:
-                st.sidebar.error("❌ أدخل بريدك الإلكتروني.")
+                st.sidebar.error("❌ Please enter your email.")
 
     return st.session_state.logged_in

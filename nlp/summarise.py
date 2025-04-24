@@ -1,36 +1,78 @@
 import os
+from typing import Literal
+
 import openai
 from dotenv import load_dotenv
 
 load_dotenv()
+api_key = os.getenv("OPENAI_API_KEY")
+if not api_key:
+    raise RuntimeError("OPENAI_API_KEY missing in environment")
 
-# Create a client instance (new SDK format)
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = openai.OpenAI(api_key=api_key)
 
-def summarize_transcript(transcript: str) -> str:
-    """
-    Summarizes an Arabic transcript of a doctor-patient conversation
-    into a structured clinical note.
-    """
-    prompt = f"""
-    أنت مساعد طبي. لخّص محادثة الطبيب مع المريض في ملاحظات طبية باستخدام البنية التالية:
-    - شكوى المريض:
-    - ملاحظات سريرية:
-    - التشخيص (إذا وُجد):
-    - خطة العلاج:
 
-    المحادثة:
-    {transcript}
+def summarize_transcript(
+    transcript: str,
+    *,
+    model: str = "gpt-4o-mini",
+    temperature: float = 0.2,
+    max_tokens: int = 512,
+    tone: Literal["telegraphic", "full"] = "telegraphic",
+) -> str:
     """
+    Convert an **Arabic** doctor-patient conversation into an English clinical note.
+
+    Parameters
+    ----------
+    transcript : str
+        Arabic transcript, already tagged <doctor>/<patient>.
+    model : str
+        Chat‐completion model to use.
+    temperature : float
+        A touch of temperature helps the model re-phrase naturally without hallucinating.
+    max_tokens : int
+        Hard cap on summary length.
+    tone : {'telegraphic', 'full'}
+        'telegraphic' gives short bullet points; 'full' gives prose sentences.
+    """
+    style_hint = (
+        "Use terse, bullet-point phrases."
+        if tone == "telegraphic"
+        else "Write complete sentences that flow naturally."
+    )
+
+    user_prompt = f"""You are a medical assistant.
+The following conversation is in Arabic—read it carefully but **write your answer in English**.
+
+Summarize the dialogue into structured clinical notes using *exactly* this template:
+- Patient Complaint:
+- Clinical Notes:
+- Diagnosis (if any):
+- Treatment Plan:
+
+{style_hint}
+
+Conversation (Arabic):
+{transcript}
+"""
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4",
+        resp = client.chat.completions.create(
+            model=model,
             messages=[
-                {"role": "system", "content": "أنت مساعد طبي متمرس."},
-                {"role": "user", "content": prompt}
-            ]
+                {
+                    "role": "system",
+                    "content": (
+                        "You are an experienced clinical scribe. "
+                        "Stay faithful to the source; do not invent facts."
+                    ),
+                },
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=temperature,
+            max_tokens=max_tokens,
         )
-        return response.choices[0].message.content.strip()
+        return resp.choices[0].message.content.strip()
     except Exception as e:
         raise RuntimeError(f"Summarization failed: {e}")
