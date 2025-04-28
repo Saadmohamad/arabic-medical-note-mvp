@@ -7,3 +7,4 @@ passlib[bcrypt]==1.7.4
 fpdf2>=2.6.1
 arabic_reshaper>=3.0.0
 python-bidi>=0.6.6
+httpx==0.25.2 
