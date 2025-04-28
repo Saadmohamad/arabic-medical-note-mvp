@@ -16,3 +16,4 @@ build/
 audio/
 *.wav
 *.mp3
+.streamlit/secrets.toml
