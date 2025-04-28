@@ -1,7 +1,3 @@
-# Converted English version of Arabic Medical Note-Taker MVP
-# Complete translation from Arabic to English across UI text, notes, and labels
-# Translates app interface, labels, instructions, and generated outputs
-
 import streamlit as st
 from db.models import setup_database, get_session_details_by_index
 from ui.session_ui import (
@@ -13,8 +9,9 @@ from ui.session_ui import (
 from ui.login_ui import login_flow
 from utils.helpers import export_summary_pdf
 
-setup_database()
 st.set_page_config(page_title="ANE English Medical Note Taker", layout="centered")
+
+setup_database()
 
 if not login_flow():
     st.warning("⚠️ Please log in first.")

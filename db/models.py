@@ -1,26 +1,9 @@
-import psycopg2
-import os
-from dotenv import load_dotenv
 from passlib.hash import bcrypt
-
-load_dotenv()
-
-DB_CONFIG = {
-    "dbname": os.getenv("POSTGRES_DB"),
-    "user": os.getenv("POSTGRES_USER"),
-    "password": os.getenv("POSTGRES_PASSWORD"),
-    "host": os.getenv("POSTGRES_HOST"),
-    "port": os.getenv("POSTGRES_PORT"),
-    "sslmode": "require",
-}
-
-
-def get_connection():
-    return psycopg2.connect(**DB_CONFIG)
+from db.pool import get_conn, put_conn
 
 
 def setup_database():
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
 
     # Create users table FIRST
@@ -74,13 +57,13 @@ def setup_database():
 
     conn.commit()
     cur.close()
-    conn.close()
+    put_conn(conn)
 
 
 def create_user(email: str, password: str) -> int:
     """Hash the password and insert a new user; returns user id."""
     pwd_hash = bcrypt.hash(password)
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO users (email, password_hash) VALUES (%s, %s) ON CONFLICT (email) DO NOTHING",
@@ -90,18 +73,18 @@ def create_user(email: str, password: str) -> int:
     cur.execute("SELECT id FROM users WHERE email = %s", (email,))
     user_id = cur.fetchone()[0]
     cur.close()
-    conn.close()
+    put_conn(conn)
     return user_id
 
 
 def authenticate_user(email: str, password: str) -> bool:
     """Return True if email exists and password matches."""
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT password_hash FROM users WHERE email = %s", (email,))
     row = cur.fetchone()
     cur.close()
-    conn.close()
+    put_conn(conn)
     if not row:
         return False
     stored_hash = row[0]
@@ -109,7 +92,7 @@ def authenticate_user(email: str, password: str) -> bool:
 
 
 def insert_doctor(name):
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO doctors (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (name,)
@@ -118,12 +101,12 @@ def insert_doctor(name):
     cur.execute("SELECT id FROM doctors WHERE name = %s", (name,))
     doctor_id = cur.fetchone()[0]
     cur.close()
-    conn.close()
+    put_conn(conn)
     return doctor_id
 
 
 def insert_patient(name):
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         "INSERT INTO patients (name) VALUES (%s) ON CONFLICT (name) DO NOTHING", (name,)
@@ -132,14 +115,14 @@ def insert_patient(name):
     cur.execute("SELECT id FROM patients WHERE name = %s", (name,))
     patient_id = cur.fetchone()[0]
     cur.close()
-    conn.close()
+    put_conn(conn)
     return patient_id
 
 
 def insert_session(
     user_id, doctor_id, patient_id, date, transcript, summary, audio_path
 ):
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         """
@@ -150,21 +133,21 @@ def insert_session(
     )
     conn.commit()
     cur.close()
-    conn.close()
+    put_conn(conn)
 
 
 def get_patient_names():
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT name FROM patients")
     names = [row[0] for row in cur.fetchall()]
     cur.close()
-    conn.close()
+    put_conn(conn)
     return names
 
 
 def get_recent_sessions(user_id, limit=5):
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         """
@@ -179,32 +162,32 @@ def get_recent_sessions(user_id, limit=5):
     )
     rows = cur.fetchall()
     cur.close()
-    conn.close()
+    put_conn(conn)
     return rows
 
 
 def get_user_id(email: str) -> int:
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT id FROM users WHERE email = %s", (email,))
     user_id = cur.fetchone()[0]
     cur.close()
-    conn.close()
+    put_conn(conn)
     return user_id
 
 
 def user_exists(email: str) -> bool:
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute("SELECT 1 FROM users WHERE email = %s", (email,))
     exists = cur.fetchone() is not None
     cur.close()
-    conn.close()
+    put_conn(conn)
     return exists
 
 
 def get_session_details_by_index(user_id: int, limit: int = 20):
-    conn = get_connection()
+    conn = get_conn()
     cur = conn.cursor()
     cur.execute(
         """
@@ -220,5 +203,5 @@ def get_session_details_by_index(user_id: int, limit: int = 20):
     )
     sessions = cur.fetchall()
     cur.close()
-    conn.close()
+    put_conn(conn)
     return sessions

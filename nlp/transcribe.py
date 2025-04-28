@@ -1,9 +1,4 @@
-import openai
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+from utils.openai_client import get_openai_client as _get_openai_client
 
 
 def transcribe_audio(audio_file_path):
@@ -17,6 +12,7 @@ def transcribe_audio(audio_file_path):
         str: Transcribed Arabic text.
     """
     try:
+        client = _get_openai_client()
         with open(audio_file_path, "rb") as f:
             transcript = client.audio.transcriptions.create(
                 model="whisper-1", file=f, language="ar"

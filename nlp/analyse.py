@@ -1,15 +1,7 @@
 from __future__ import annotations
+from utils.openai_client import get_openai_client
 
-import os
-from dotenv import load_dotenv
-from openai import OpenAI
-
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise RuntimeError("OPENAI_API_KEY missing from env")
-
-client = OpenAI(api_key=api_key)
+client = get_openai_client()
 
 # --------------------------------------------------------------------------- #
 #  📜  System instructions (English answers only)                             #

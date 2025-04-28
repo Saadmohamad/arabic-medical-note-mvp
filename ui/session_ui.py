@@ -2,7 +2,9 @@ from __future__ import annotations
 import datetime
 import tempfile
 import re
+import gc
 import streamlit as st
+from pathlib import Path
 
 try:
     from st_audiorec import st_audiorec
@@ -12,9 +14,10 @@ except ModuleNotFoundError:
     )
     st.stop()
 
-from nlp.transcribe import transcribe_audio
+from nlp.transcribe import transcribe_audio as _transcribe_audio
 from nlp.summarise import summarize_transcript
 from nlp.analyse import extract_symptom_keywords, extract_possible_diagnoses
+
 from db.models import insert_doctor, insert_patient, insert_session, get_patient_names
 from utils.helpers import export_summary_pdf
 
@@ -26,6 +29,29 @@ SUMMARY_LABELS_EN = [
     "Diagnosis (if any)",
     "Treatment Plan",
 ]
+
+
+@st.cache_data(show_spinner="🔊 Transcribing…")
+def transcribe_file(path: str) -> str:
+    return _transcribe_audio(path)
+
+
+@st.cache_data(show_spinner="📝 Summarising…")
+def summarise_cached(transcript: str) -> str:
+    """One-hour cache for GPT summary; key = transcript hash."""
+    return summarize_transcript(transcript)
+
+
+@st.cache_data(show_spinner="🔍 Extracting symptoms…")
+def extract_symptoms_cached(summary: str, transcript: str) -> str:
+    """One-hour cache; key = (summary, transcript) tuple."""
+    return extract_symptom_keywords(summary, transcript)
+
+
+@st.cache_data(show_spinner="🩺 Generating differential…")
+def extract_diagnoses_cached(summary: str, transcript: str) -> str:
+    """One-hour cache; key = (summary, transcript) tuple."""
+    return extract_possible_diagnoses(summary, transcript)
 
 
 def _inject_ltr_css() -> None:
@@ -122,11 +148,18 @@ def session_interaction() -> None:
             )
         else:
             status.success("Recording complete ✔️")
-        if bytes_rec and st.session_state.get("audio_bytes") != bytes_rec:
-            st.session_state.audio_bytes = bytes_rec
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+
+        if bytes_rec:
+            # with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            #    tmp.write(bytes_rec)
+            #    st.session_state.audio_file_path = tmp.name
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as tmp:
                 tmp.write(bytes_rec)
                 st.session_state.audio_file_path = tmp.name
+
+            del bytes_rec
+            gc.collect()
+
         st.button(
             "Next ➡️",
             disabled="audio_file_path" not in st.session_state,
@@ -141,20 +174,20 @@ def session_interaction() -> None:
 
         if "transcript" not in st.session_state:
             with st.status("Transcribing…", expanded=False):
-                st.session_state.transcript = transcribe_audio(audio_path)
+                st.session_state.transcript = transcribe_file(audio_path)
 
         if "summary_raw" not in st.session_state:
             with st.status("Summarizing…", expanded=False):
-                st.session_state.summary_raw = summarize_transcript(
+                st.session_state.summary_raw = summarise_cached(
                     st.session_state.transcript
                 )
 
         if not st.session_state.get("analysis_ready"):
             with st.spinner("Running AI analysis…"):
-                st.session_state.keywords = extract_symptom_keywords(
+                st.session_state.keywords = extract_symptoms_cached(
                     st.session_state.summary_raw, st.session_state.transcript
                 )
-                st.session_state.diagnoses = extract_possible_diagnoses(
+                st.session_state.diagnoses = extract_diagnoses_cached(
                     st.session_state.summary_raw, st.session_state.transcript
                 )
                 st.session_state.analysis_ready = True
@@ -171,7 +204,11 @@ def session_interaction() -> None:
                 audio_path,
             )
             st.success("✅ Session saved!")
-
+            try:
+                Path(audio_path).unlink(missing_ok=True)
+            except Exception:
+                # Safe to ignore – the container is ephemeral anyway
+                pass
         st.markdown("### 📄 Full Transcript")
         st.write(st.session_state.transcript)
 
@@ -200,4 +237,6 @@ def session_interaction() -> None:
             )
             with open(pdf_path, "rb") as fp:
                 st.download_button("📥 Download Summary", fp, file_name="summary.pdf")
+            Path(pdf_path).unlink(missing_ok=True)
+
         return

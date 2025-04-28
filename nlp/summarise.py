@@ -1,15 +1,8 @@
-import os
 from typing import Literal
+from utils.openai_client import get_openai_client
 
-import openai
-from dotenv import load_dotenv
 
-load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
-if not api_key:
-    raise RuntimeError("OPENAI_API_KEY missing in environment")
-
-client = openai.OpenAI(api_key=api_key)
+client = get_openai_client()
 
 
 def summarize_transcript(

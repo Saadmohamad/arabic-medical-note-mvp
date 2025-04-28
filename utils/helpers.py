@@ -8,17 +8,15 @@ from typing import Optional
 from fpdf import FPDF  # fpdf2
 import arabic_reshaper
 from bidi.algorithm import get_display
-
-FONT_CACHE: dict[str, tuple[str, str]] = {}
+from functools import lru_cache
 
 
 # -----------------------------------------------------------------------------
 # 🔤 Font utilities
 # -----------------------------------------------------------------------------
+@lru_cache(maxsize=1)
 def _get_dejavu_font() -> tuple[str, str]:
     """Return the bundled DejaVuSans.ttf font for PDF generation."""
-    if "dejavu" in FONT_CACHE:
-        return FONT_CACHE["dejavu"]
 
     bundled = Path(__file__).parent.parent / "fonts" / "DejaVuSans.ttf"
     if not bundled.is_file():
@@ -27,8 +25,7 @@ def _get_dejavu_font() -> tuple[str, str]:
             "Make sure you have downloaded DejaVuSans.ttf into the ./fonts directory."
         )
 
-    FONT_CACHE["dejavu"] = ("DejaVu", str(bundled))
-    return FONT_CACHE["dejavu"]
+    return ("DejaVu", str(bundled))
 
 
 # -----------------------------------------------------------------------------
