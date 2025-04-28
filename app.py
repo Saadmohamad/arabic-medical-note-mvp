@@ -1,4 +1,6 @@
 import streamlit as st
+
+st.set_page_config(page_title="ANE English Medical Note Taker", layout="centered")
 from db.models import setup_database, get_session_details_by_index
 from ui.session_ui import (
     session_interaction,
@@ -9,7 +11,6 @@ from ui.session_ui import (
 from ui.login_ui import login_flow
 from utils.helpers import export_summary_pdf
 
-st.set_page_config(page_title="ANE English Medical Note Taker", layout="centered")
 
 setup_database()
 
