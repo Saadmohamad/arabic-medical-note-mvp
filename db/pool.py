@@ -1,7 +1,6 @@
 from __future__ import annotations
-import psycopg2.pool
-import functools
 import streamlit as st
+from psycopg2.pool import SimpleConnectionPool
 
 DB_CONFIG = {
     "dbname": st.secrets["POSTGRES_DB"],
@@ -13,9 +12,9 @@ DB_CONFIG = {
 }
 
 
-@functools.lru_cache(maxsize=1)
+@st.cache_resource(show_spinner="🔌 Connecting to Postgres…")
 def _pool():
-    return psycopg2.pool.SimpleConnectionPool(minconn=1, maxconn=5, **DB_CONFIG)
+    return SimpleConnectionPool(minconn=1, maxconn=5, **DB_CONFIG)
 
 
 def get_conn():
