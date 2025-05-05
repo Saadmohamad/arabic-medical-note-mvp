@@ -18,3 +18,4 @@ audio/
 *.mp3
 .streamlit/secrets.toml
 .streamlit/secrets.toml
+create_user.py

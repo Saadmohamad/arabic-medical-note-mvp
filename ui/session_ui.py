@@ -6,11 +6,13 @@ import json
 import tempfile
 import wave
 from enum import IntEnum
-from typing import Any, Dict, Optional, Union
-
+from typing import Any, Dict, Optional
 import numpy as np
+
+# import numpy as np
 import streamlit as st
-from st_audiorec import st_audiorec
+
+# from st_audiorec import st_audiorec
 from ui.job_manager import add_job
 from utils.audio_io import bytes_to_wav
 from utils.async_tasks import enqueue_job
@@ -56,35 +58,53 @@ def _inject_custom_css() -> None:
 NO_DATA = "No inputs available"  # <-- updated placeholder
 
 
-def _parse_structured_summary(raw: str | dict) -> Dict[str, str]:
+def _parse_structured_summary(raw: str | dict | list[str]) -> Dict[str, str]:
     """
-    Accept JSON-string/dict or bullet-list, return dict with placeholder if empty.
+    Accept JSON-string/dict/list or bullet-list text, return dict
+    mapping each SUMMARY_LABELS_EN key to a string (or NO_DATA).
     """
+    # Start with placeholders
     result: Dict[str, str] = {k: NO_DATA for k in SUMMARY_LABELS_EN}
 
-    # JSON / dict parsing
+    # 1) If they already gave us a dict of lists or strings:
     if isinstance(raw, dict):
         for k in SUMMARY_LABELS_EN:
-            val = raw.get(k, "").strip()
-            result[k] = val if val else NO_DATA
+            val = raw.get(k, "")
+            if isinstance(val, list):
+                val = "\n".join(val)
+            # ensure string before strip
+            val_str = str(val).strip()
+            result[k] = val_str if val_str else NO_DATA
         return result
 
-    try:
-        obj = json.loads(raw)
-        if isinstance(obj, dict):
-            for k in SUMMARY_LABELS_EN:
-                val = obj.get(k, "").strip()
-                result[k] = val if val else NO_DATA
-            return result
-    except (TypeError, ValueError, json.JSONDecodeError):
-        pass  # fall through to legacy parsing
+    # 2) If they gave us a JSON string:
+    if isinstance(raw, str):
+        try:
+            obj = json.loads(raw)
+            if isinstance(obj, dict):
+                for k in SUMMARY_LABELS_EN:
+                    val = obj.get(k, "")
+                    if isinstance(val, list):
+                        val = "\n".join(val)
+                    val_str = str(val).strip()
+                    result[k] = val_str if val_str else NO_DATA
+                return result
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pass  # not JSON, fall back to legacy
 
-    # Legacy bullet-list parsing
+    # 3) Legacy bullet-list parsing (handles pure text or list-of-lines)
+    lines = []
+    if isinstance(raw, list):
+        # flatten list-of-lines to one string
+        lines = [line for item in raw for line in str(item).splitlines()]
+    else:
+        lines = str(raw).splitlines()
+
     current: Optional[str] = None
-    for line in str(raw).splitlines():
-        line = line.lstrip(" -•").strip()
-        if ":" in line:
-            head, tail = line.split(":", 1)
+    for line in lines:
+        text = line.lstrip(" -•").strip()
+        if ":" in text:
+            head, tail = text.split(":", 1)
             head = head.strip()
             if head in SUMMARY_LABELS_EN:
                 current = head
@@ -92,10 +112,13 @@ def _parse_structured_summary(raw: str | dict) -> Dict[str, str]:
                 result[head] = val if val else NO_DATA
                 continue
         if current:
-            if result[current] == NO_DATA:
-                result[current] = line
+            # append continued lines
+            prev = result[current]
+            addition = text
+            if prev == NO_DATA:
+                result[current] = addition
             else:
-                result[current] += " " + line
+                result[current] = prev + "\n" + addition
 
     return result
 
@@ -149,23 +172,13 @@ def session_interaction() -> None:
     # ─────────────────────────────── 2️⃣  Audio recording page
     if st.session_state.wizard_step == Step.RECORD:
         st.subheader("🎙️ Record Session")
-        raw_audio: Union[bytes, np.ndarray, None] = st_audiorec()
 
-        # No audio yet ➜ show instructions
-        if (
-            raw_audio is None
-            or (isinstance(raw_audio, bytes) and not raw_audio)
-            or (isinstance(raw_audio, np.ndarray) and raw_audio.size == 0)
-        ):
-            st.info("Click the mic icon, speak, then press stop to finish.")
+        audio_file = st.audio_input("Click to record ▶️", key="mic")
+        if audio_file is None:
+            st.info("Click the mic, speak, then stop recording.")
             return
 
-        # Convert to WAV (bytes → tmp file OR ndarray → tmp file)
-        wav_path = (
-            bytes_to_wav(raw_audio)
-            if isinstance(raw_audio, bytes)
-            else _np_float_to_wav(raw_audio)
-        )
+        wav_path = bytes_to_wav(audio_file.getvalue())
 
         st.session_state.update(wav_path=wav_path, wizard_step=Step.READY)
         st.rerun()

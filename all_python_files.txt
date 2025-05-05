@@ -1,0 +1,1585 @@
+===== ./ui/login_ui.py =====
+import streamlit as st
+from db.models import authenticate_user, get_user_id
+
+
+def clear_session() -> None:
+    st.session_state.clear()
+
+
+def login_flow() -> bool:
+    """Simple *username + password* login. Returns **True** when authenticated."""
+    st.sidebar.header("🔐 Login")
+
+    # Ensure deterministic keys exist so Streamlit widgets don’t complain
+    if "logged_in" not in st.session_state:
+        st.session_state.logged_in = False
+        st.session_state.user_name = ""
+
+    # ----- Already logged‑in branch -----
+    if st.session_state.logged_in:
+        st.sidebar.success(f"Logged in as: {st.session_state.user_name}")
+        if st.sidebar.button("Log Out"):
+            clear_session()
+            st.rerun()
+        return True
+
+    # ----- Credential entry -----
+    user_name = st.sidebar.text_input("👤 Username")
+    password = st.sidebar.text_input("🔑 Password", type="password")
+
+    if st.sidebar.button("Log In"):
+        if authenticate_user(user_name, password):
+            # Freshen the session before writing new state
+            clear_session()
+            st.session_state.logged_in = True
+            st.session_state.user_name = user_name
+            st.session_state.user_id = get_user_id(user_name)
+            st.sidebar.success("✅ Logged in successfully!")
+            st.rerun()
+        else:
+            st.sidebar.error("❌ Incorrect username or password.")
+
+    return st.session_state.logged_in
+
+===== ./ui/session_ui.py =====
+# ui/session_ui.py
+from __future__ import annotations
+
+import datetime
+import json
+import tempfile
+import wave
+from enum import IntEnum
+from typing import Any, Dict, Optional, Union
+
+import numpy as np
+import streamlit as st
+from st_audiorec import st_audiorec
+from ui.job_manager import add_job
+from utils.audio_io import bytes_to_wav
+from utils.async_tasks import enqueue_job
+from utils.helpers import export_summary_pdf
+
+
+# ──────────────────────────────────────────────────────────────── Wizard steps
+class Step(IntEnum):
+    META = 1
+    RECORD = 2
+    READY = 3
+    PROCESSING = 4
+    RESULTS = 5
+
+
+# ────────────────────────────────────────────────────────────────── Constants
+SUMMARY_LABELS_EN = [
+    "Patient Complaint",
+    "Clinical Notes",
+    "Diagnosis",
+    "Treatment Plan",
+]
+
+NO_DATA = "No available readout"  # used by _parse_structured_summary
+
+
+# ──────────────────────────────────────────────────────────────── UI helpers
+def _inject_custom_css() -> None:
+    """Force L-to-R layout even when Arabic text appears."""
+    st.markdown(
+        """
+        <style>
+            div[data-testid="stAppViewContainer"]{direction:ltr;text-align:left;}
+            section[data-testid="stSidebar"],div[data-testid="stSidebar"]{
+                direction:ltr;text-align:left;position:fixed;left:0;right:auto;}
+            [data-testid="stSidebar"] *{direction:ltr;text-align:left;}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
+NO_DATA = "No inputs available"  # <-- updated placeholder
+
+
+def _parse_structured_summary(raw: str | dict) -> Dict[str, str]:
+    """
+    Accept JSON-string/dict or bullet-list, return dict with placeholder if empty.
+    """
+    result: Dict[str, str] = {k: NO_DATA for k in SUMMARY_LABELS_EN}
+
+    # JSON / dict parsing
+    if isinstance(raw, dict):
+        for k in SUMMARY_LABELS_EN:
+            val = raw.get(k, "").strip()
+            result[k] = val if val else NO_DATA
+        return result
+
+    try:
+        obj = json.loads(raw)
+        if isinstance(obj, dict):
+            for k in SUMMARY_LABELS_EN:
+                val = obj.get(k, "").strip()
+                result[k] = val if val else NO_DATA
+            return result
+    except (TypeError, ValueError, json.JSONDecodeError):
+        pass  # fall through to legacy parsing
+
+    # Legacy bullet-list parsing
+    current: Optional[str] = None
+    for line in str(raw).splitlines():
+        line = line.lstrip(" -•").strip()
+        if ":" in line:
+            head, tail = line.split(":", 1)
+            head = head.strip()
+            if head in SUMMARY_LABELS_EN:
+                current = head
+                val = tail.strip()
+                result[head] = val if val else NO_DATA
+                continue
+        if current:
+            if result[current] == NO_DATA:
+                result[current] = line
+            else:
+                result[current] += " " + line
+
+    return result
+
+
+def _combine_structured_summary(sections: Dict[str, str]) -> str:
+    """Re-serialise the dict back into the simple bullet list used in PDFs/DB."""
+    return "\n".join(f"- {k}: {v.strip()}" for k, v in sections.items())
+
+
+# ───────────────────────────────────────────────────────────── Audio helpers
+def _np_float_to_wav(samples: np.ndarray, *, sr: int = 48_000) -> str:
+    """Convert a float32 NumPy array (-1.0…1.0) to a 16-bit PCM mono WAV file."""
+    pcm16 = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16).tobytes()
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    with wave.open(tmp.name, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sr)
+        wf.writeframes(pcm16)
+    return tmp.name
+
+
+# ────────────────────────────────────────────────────────────── Main wizard
+def session_interaction() -> None:
+    """Entry-point called from `app.py` when the user starts a new session."""
+    _inject_custom_css()
+
+    # Initialise wizard state once
+    st.session_state.setdefault("wizard_step", Step.META)
+
+    # ─────────────────────────────── 1️⃣  Meta-data page
+    if st.session_state.wizard_step == Step.META:
+        st.subheader("🩺 Doctor & Patient Details")
+        with st.form("meta"):
+            doctor_name = st.text_input("👨‍⚕️ Doctor's Name")
+            patient_name = st.text_input("👤 Patient Name")
+            date_sel = st.date_input("📅 Date", value=datetime.date.today())
+            if st.form_submit_button("Next ➡️", use_container_width=True):
+                if not doctor_name.strip() or not patient_name.strip():
+                    st.error("Please complete all fields before continuing.")
+                else:
+                    st.session_state.update(
+                        doctor_name=doctor_name.strip(),
+                        patient_name=patient_name.strip(),
+                        date_selected=date_sel,
+                        wizard_step=Step.RECORD,
+                    )
+                    st.rerun()
+        return
+
+    # ─────────────────────────────── 2️⃣  Audio recording page
+    if st.session_state.wizard_step == Step.RECORD:
+        st.subheader("🎙️ Record Session")
+        raw_audio: Union[bytes, np.ndarray, None] = st_audiorec()
+
+        # No audio yet ➜ show instructions
+        if (
+            raw_audio is None
+            or (isinstance(raw_audio, bytes) and not raw_audio)
+            or (isinstance(raw_audio, np.ndarray) and raw_audio.size == 0)
+        ):
+            st.info("Click the mic icon, speak, then press stop to finish.")
+            return
+
+        # Convert to WAV (bytes → tmp file OR ndarray → tmp file)
+        wav_path = (
+            bytes_to_wav(raw_audio)
+            if isinstance(raw_audio, bytes)
+            else _np_float_to_wav(raw_audio)
+        )
+
+        st.session_state.update(wav_path=wav_path, wizard_step=Step.READY)
+        st.rerun()
+        return
+
+    # ─────────────────────────────── 3️⃣  Post-record (download/process)
+    if st.session_state.wizard_step == Step.READY:
+        st.subheader("🎧 Recording Ready")
+
+        # playback widget
+        with open(st.session_state.wav_path, "rb") as fp:
+            audio_bytes = fp.read()
+            st.audio(audio_bytes, format="audio/wav")
+
+        col_dl, col_proc = st.columns(2)
+        processing_now = st.session_state.get("job_queued", False)
+
+        # Download button
+        with col_dl:
+            st.download_button(
+                "📥 Download Recording",
+                audio_bytes,
+                file_name="session.wav",
+                mime="audio/wav",
+            )
+
+        # “Process recording” button
+        with col_proc:
+            if st.button(
+                "⏳ Processing…" if processing_now else "⚙️ Process Recording",
+                type="primary",
+                disabled=processing_now,
+            ):
+                payload: Dict[str, Any] = dict(
+                    user_id=st.session_state.user_id,
+                    doctor_name=st.session_state.doctor_name,
+                    patient_name=st.session_state.patient_name,
+                    date_selected=st.session_state.date_selected,
+                    audio_path=st.session_state.wav_path,
+                )
+                fut = enqueue_job(payload)
+                st.session_state.update(
+                    job_future=fut, job_queued=True, wizard_step=Step.PROCESSING
+                )
+                # register in sidebar job tracker
+                add_job(
+                    fut,
+                    meta={
+                        "patient": st.session_state.patient_name,
+                        "doctor": st.session_state.doctor_name,
+                        "date": str(st.session_state.date_selected),
+                        "session_id": "",
+                    },
+                )
+                st.rerun()
+        return
+
+    # ─────────────────────────────── 4️⃣  Background processing page
+    if st.session_state.wizard_step == Step.PROCESSING:
+        fut = st.session_state.get("job_future")
+        if fut and fut.done():
+            result = fut.result()
+            if err := result.get("pipeline_error"):
+                st.error(f"🚨 {err}")
+                # reset so the user can try again
+                st.session_state.update(
+                    job_future=None, job_queued=False, wizard_step=Step.READY
+                )
+                return
+            st.session_state.update(result, job_queued=False, wizard_step=Step.RESULTS)
+            st.rerun()
+        st.info("⏳ Processing in the background…")
+        st.button("🔄 Refresh", on_click=st.rerun)
+        return
+
+    # ─────────────────────────────── 5️⃣  Results / editable summary
+    if st.session_state.wizard_step == Step.RESULTS:
+        st.subheader("📄 Full Transcript")
+        st.write(st.session_state.transcript)
+
+        st.markdown("### 📝 Edit Summary")
+        st.info("The fields below are AI-generated. Feel free to adjust.")
+
+        sections = _parse_structured_summary(st.session_state.summary_raw)
+        updated: Dict[str, str] = {
+            lbl: st.text_area(
+                lbl + ":", value=sections.get(lbl, ""), key=f"summary_{lbl}", height=90
+            )
+            for lbl in SUMMARY_LABELS_EN
+        }
+
+        if st.button("📄 Generate Summary PDF"):
+            combined = _combine_structured_summary(updated)
+            pdf_path = export_summary_pdf(
+                st.session_state.doctor_name,
+                st.session_state.patient_name,
+                st.session_state.date_selected,
+                combined,
+                st.session_state.transcript,
+            )
+            st.session_state.latest_pdf = pdf_path
+            st.success("PDF ready – download below or attach to email.")
+            st.rerun()
+
+        if pdf_path := st.session_state.get("latest_pdf"):
+            col_dl, col_mail = st.columns(2)
+
+            # direct download
+            with col_dl, open(pdf_path, "rb") as fp:
+                st.download_button("📥 Download Summary", fp, file_name="summary.pdf")
+
+            # optional e-mail
+            with col_mail:
+                default_email = st.session_state.get(
+                    "user_email"
+                ) or st.session_state.get("user_name", "")
+                to_addr = st.text_input(
+                    "✉️ Send to (email)", value=default_email, key="send_to_email"
+                )
+                if st.button("📧 Email PDF", disabled=not to_addr.strip()):
+                    from utils.email_utils import send_pdf
+
+                    try:
+                        send_pdf(
+                            to_email=to_addr,
+                            pdf_path=pdf_path,
+                            subject="Medical Session Summary",
+                            body="Attached is the PDF summary you requested.",
+                        )
+                        st.success(f"Sent to {to_addr}")
+                    except RuntimeError as e:
+                        st.error(str(e))
+
+===== ./ui/__init__.py =====
+
+===== ./ui/job_manager.py =====
+# ui/job_manager.py
+from __future__ import annotations
+
+import datetime
+import uuid
+from concurrent.futures import Future
+import streamlit as st
+
+# ---------------------------------------------------------------------------
+# Internal helpers / aliases
+# ---------------------------------------------------------------------------
+JobStatus = dict[str, str | Future | datetime.datetime]
+
+
+def _init() -> None:
+    """Ensure the jobs dict exists inside session_state."""
+    if "jobs" not in st.session_state:
+        st.session_state.jobs = {}
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+def add_job(fut: Future, *, meta: dict[str, str]) -> str:
+    """
+    Register a background Future and return its job-id (8-char hex).
+
+    Parameters
+    ----------
+    fut  : concurrent.futures.Future
+        The Future returned by `enqueue_job(...)`.
+    meta : dict[str, str]
+        Extra fields to display in the sidebar (e.g. patient, doctor, date).
+    """
+    _init()
+    jid = uuid.uuid4().hex[:8]
+    st.session_state.jobs[jid] = {
+        "future": fut,
+        "status": "⏳ pending",
+        "submitted": datetime.datetime.now(),
+        **meta,
+    }
+    return jid
+
+
+def refresh_jobs() -> None:
+    """Update each stored job’s status in-place."""
+    _init()
+    for job in st.session_state.jobs.values():
+        fut: Future = job["future"]  # type: ignore
+        if fut.done():
+            if fut.exception():
+                job["status"] = "❌ error"
+            else:
+                job["status"] = "✅ done"
+                res = fut.result()
+                # If the pipeline returned a session_id, copy it for “View result”
+                if res and "session_id" in res:
+                    job["session_id"] = res["session_id"]
+
+
+def render_sidebar() -> None:
+    """
+    Call once (e.g. from app.py) to draw the background-jobs section
+    in the Streamlit sidebar.
+    """
+    refresh_jobs()
+    jobs = st.session_state.jobs
+    if not jobs:
+        return
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### 🚀 Background jobs")
+
+    for jid, job in list(jobs.items()):
+        label = f"{job.get('patient', '') or job.get('title', 'Job')} – {job['status']}"
+        with st.sidebar.expander(label, expanded=False):
+            st.write(f"**ID:** `{jid}`")
+            st.write(f"**Started:** {job['submitted'].strftime('%H:%M:%S')}")
+            if job["status"].startswith("✅") and job.get("session_id"):
+                if st.button("View result", key=f"view_{jid}"):
+                    st.session_state["view_choice"] = "📂 Past Sessions"
+                    st.session_state["selected_past_session_id"] = job["session_id"]
+                    st.rerun()
+
+            if st.button("🗑️ Remove", key=f"del_{jid}"):
+                jobs.pop(jid, None)
+                st.rerun()
+
+===== ./create_user.py =====
+# create_user.py
+import sys
+from db.models import create_user, user_exists, setup_database
+
+def main(email, password):
+    setup_database()  # Ensures tables exist before insertion
+    if user_exists(email):
+        print(f"❌ User '{email}' already exists.")
+        return
+    user_id = create_user(email, password)
+    print(f"✅ User '{email}' created successfully (ID: {user_id}).")
+
+if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: python create_user.py <email> <password>")
+        sys.exit(1)
+
+    email, password = sys.argv[1], sys.argv[2]
+    main(email, password)
+
+===== ./requirements.txt =====
+psycopg2-binary==2.9.9
+streamlit==1.34.0
+openai==1.22.0           # streaming & 4o-mini support
+streamlit-audiorec==0.1.3
+passlib==1.7.4
+bcrypt==3.2.2
+fpdf2>=2.6.1
+arabic_reshaper>=3.0.0
+python-bidi>=0.6.6
+httpx==0.25.2
+
+===== ./.pre-commit-config.yaml =====
+# ------------------------------------------------------------------
+#  Pre‑commit hooks for the Arabic‑Medical‑Note MVP
+# ------------------------------------------------------------------
+repos:
+  - repo: https://github.com/psf/black
+    rev: 24.4.0
+    hooks:
+      - id: black
+        language_version: python3.10
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.4
+    hooks:
+      - id: ruff
+        args: ["."]
+        language_version: python3.10
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.9.0
+    hooks:
+      - id: mypy
+        exclude: "tests/"
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+      - id: check-added-large-files
+
+===== ./utils/email_utils.py =====
+# utils/email_utils.py
+from __future__ import annotations
+import smtplib
+import ssl
+import logging
+import pathlib
+from email.mime.application import MIMEApplication
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from utils.secret import get as _secret  # you already have this helper
+
+logger = logging.getLogger(__name__)
+
+
+def send_pdf(to_email: str, pdf_path: str, *, subject: str, body: str) -> None:
+    """
+    Send a single PDF attachment via Gmail SMTP (STARTTLS, port 587).
+    """
+    msg = MIMEMultipart()
+    msg["From"] = _secret("FROM_EMAIL", default=_secret("SMTP_USER"))
+    msg["To"] = to_email
+    msg["Subject"] = subject
+    msg.attach(MIMEText(body, "plain"))
+
+    # ---- attach PDF -----------------------------------------------------
+    fname = pathlib.Path(pdf_path).name
+    with open(pdf_path, "rb") as fp:
+        part = MIMEApplication(fp.read(), _subtype="pdf")
+    part.add_header("Content-Disposition", "attachment", filename=fname)
+    msg.attach(part)
+
+    context = ssl.create_default_context()
+    try:
+        with smtplib.SMTP(_secret("SMTP_HOST"), int(_secret("SMTP_PORT"))) as server:
+            server.starttls(context=context)
+            server.login(_secret("SMTP_USER"), _secret("SMTP_PASS"))
+            server.sendmail(msg["From"], [to_email], msg.as_string())
+        logger.info("📧 PDF emailed to %s", to_email)
+    except Exception as e:
+        logger.error("Email sending failed: %s", e)
+        raise RuntimeError("Failed to send email") from e
+
+===== ./utils/__init__.py =====
+
+===== ./utils/llm_helpers.py =====
+# utils/llm_helpers.py
+from __future__ import annotations
+import logging
+from tenacity import retry, wait_exponential, stop_after_attempt
+from openai import RateLimitError, APIError, OpenAI
+
+logger = logging.getLogger(__name__)
+_client: OpenAI | None = None
+
+
+def _client_singleton() -> OpenAI:
+    global _client
+    from utils.openai_client import get_openai_client  # late import to avoid cycles
+
+    if _client is None:
+        _client = get_openai_client()
+    return _client
+
+
+def safe_chat_completion(
+    messages: list[dict[str, str]],
+    *,
+    primary_model: str = "gpt-4o-mini",
+    fallback_model: str = "gpt-3.5-turbo",
+    temperature: float = 0.1,
+    max_tokens: int = 512,
+    response_format: dict | None = None,
+) -> str:
+    """
+    Call `primary_model`, fall back to `fallback_model` on transient OpenAI errors.
+    Retries each model up to 3× with exponential back-off (2 s → ≤10 s).
+    """
+
+    @retry(
+        reraise=True,
+        wait=wait_exponential(multiplier=2, min=2, max=10),
+        stop=stop_after_attempt(3),
+    )
+    def _try(model: str, *, include_json_mode: bool) -> str:
+        return (
+            _client_singleton()
+            .chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                **(
+                    {"response_format": {"type": "json_object"}}
+                    if include_json_mode and response_format
+                    else {}
+                ),
+            )
+            .choices[0]
+            .message.content.strip()
+        )
+
+    # ── primary ──────────────────────────────────────────────────────────
+    try:
+        return _try(primary_model, include_json_mode=True)
+    except (RateLimitError, APIError) as e:
+        logger.warning(
+            "%s failed (%s) → falling back to %s", primary_model, e, fallback_model
+        )
+
+    # ── fallback ─────────────────────────────────────────────────────────
+    try:
+        return _try(fallback_model, include_json_mode=False)
+    except Exception as e:
+        logger.error("Both %s and %s failed: %s", primary_model, fallback_model, e)
+        raise RuntimeError("LLM request failed after retries") from e
+
+===== ./utils/async_tasks.py =====
+# utils/async_tasks.py
+from __future__ import annotations
+
+import json
+import logging
+from concurrent.futures import ThreadPoolExecutor, Future
+from typing import Any, Dict
+
+from db.models import (
+    get_existing_session_by_hash,
+    insert_doctor,
+    insert_patient,
+    insert_session,
+)
+from nlp.transcribe import transcribe_audio
+from nlp.summarise import summarize_transcript
+from utils.audio_io import file_sha256
+
+logger = logging.getLogger(__name__)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Thread pool for background execution
+# ─────────────────────────────────────────────────────────────────────────────
+_EXECUTOR: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2)
+
+
+def _heavy_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
+    audio_path = payload["audio_path"]
+    audio_hash = file_sha256(audio_path)
+
+    # ① Cache hit?
+    if existing := get_existing_session_by_hash(payload["user_id"], audio_hash):
+        payload.update(existing, analysis_ready=True)
+        return payload
+
+    # ② Transcription
+    transcript = transcribe_audio(audio_path)
+    if not transcript:
+        payload["pipeline_error"] = "Transcription failed"
+        return payload
+
+    # ③ Summarisation
+    try:
+        summary = summarize_transcript(transcript)
+        summary_dict = json.loads(summary)
+    except RuntimeError as e:
+        payload["pipeline_error"] = str(e)
+        return payload
+
+    # ④ Persistence
+    doc_id = insert_doctor(payload["doctor_name"])
+    pat_id = insert_patient(payload["patient_name"])
+    sess_id = insert_session(
+        payload["user_id"],
+        doc_id,
+        pat_id,
+        payload["date_selected"],
+        transcript,
+        summary_dict.get("Patient Complaint", ""),
+        summary_dict.get("Clinical Notes", ""),
+        summary_dict.get("Diagnosis", ""),
+        summary_dict.get("Treatment Plan", ""),
+        audio_path,
+        audio_hash,
+    )
+
+    payload.update(
+        session_id=sess_id,
+        transcript=transcript,
+        summary_raw=summary,
+        analysis_ready=True,
+    )
+    return payload
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public API: enqueue the above on a worker thread
+# ─────────────────────────────────────────────────────────────────────────────
+def enqueue_job(payload: Dict[str, Any]) -> Future[Dict[str, Any]]:
+    """
+    Schedule `_heavy_pipeline` to run in the background.
+
+    Returns a Future whose result() is the enriched payload.
+    """
+    return _EXECUTOR.submit(_heavy_pipeline, payload)
+
+===== ./utils/audio_io.py =====
+# utils/audio_io.py
+import tempfile
+import hashlib
+import pathlib
+
+
+def file_sha256(path: str | pathlib.Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(8192), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def bytes_to_wav(raw: bytes) -> str:
+    """Convert raw PCM bytes to a temporary WAV file and return its path."""
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".wav")
+    tmp.write(raw)
+    tmp.close()
+    return tmp.name
+
+===== ./utils/secret.py =====
+# utils/secret.py
+from __future__ import annotations
+import os
+import streamlit as st
+
+
+def get(key: str, *, default: str | None = None) -> str:
+    """
+    Fetch a secret value in a way that works both **locally** and on
+    **Streamlit Cloud**.
+
+    1. If the key exists in st.secrets  → return it.
+    2. Else fall back to os.environ (what `python-dotenv` fills when
+       you're running locally with a .env file).
+    3. If the key is still missing and no default was given  → raise KeyError.
+
+    Parameters
+    ----------
+    key : str
+        The secret name, e.g. "OPENAI_API_KEY".
+    default : str | None
+        Optional value to return when the secret is missing.
+    """
+    # 1️⃣  Streamlit Cloud / st.secrets (also works locally if you set them)
+    if key in st.secrets:
+        return st.secrets[key]
+
+    # 2️⃣  Local .env file or real environment vars
+    val = os.getenv(key, default)
+
+    # 3️⃣  Complain loudly if still missing
+    if val is None:
+        raise KeyError(f"Missing secret: {key}")
+
+    return val
+
+===== ./utils/openai_client.py =====
+# utils/openai_client.py
+from __future__ import annotations
+import openai
+from utils.secret import get as _secret
+
+# ------------------------------------------------------------
+# One global OpenAI client, shared by all threads.
+# ------------------------------------------------------------
+_CLIENT: openai.OpenAI | None = None
+
+
+def get_openai_client() -> openai.OpenAI:
+    """
+    Return a singleton OpenAI client.
+
+    Using a plain module-level variable avoids Streamlit’s cache,
+    so worker threads don’t complain about missing ScriptRunContext.
+    """
+    global _CLIENT
+    if _CLIENT is None:
+        _CLIENT = openai.OpenAI(api_key=_secret("OPENAI_API_KEY"))
+    return _CLIENT
+
+===== ./utils/helpers.py =====
+from __future__ import annotations
+
+import tempfile
+from pathlib import Path
+from datetime import date as _date
+from typing import Optional
+
+from fpdf import FPDF  # fpdf2
+import arabic_reshaper
+from bidi.algorithm import get_display
+from functools import lru_cache
+
+
+# -----------------------------------------------------------------------------
+# 🔤 Font utilities
+# -----------------------------------------------------------------------------
+@lru_cache(maxsize=1)
+def _get_dejavu_font() -> tuple[str, str]:
+    """Return the bundled DejaVuSans.ttf font for PDF generation."""
+
+    bundled = Path(__file__).parent.parent / "fonts" / "DejaVuSans.ttf"
+    if not bundled.is_file():
+        raise FileNotFoundError(
+            f"Cannot find bundled font at {bundled}. "
+            "Make sure you have downloaded DejaVuSans.ttf into the ./fonts directory."
+        )
+
+    return ("DejaVu", str(bundled))
+
+
+# -----------------------------------------------------------------------------
+# 🛠️  Text helpers (Arabic shaping + RTL wrapping)
+# -----------------------------------------------------------------------------
+def _shape(txt: str) -> str:
+    """Reshape Arabic and reverse for correct RTL display."""
+    return get_display(arabic_reshaper.reshape(txt))
+
+
+def _wrap_rtl(text: str, width: int = 90) -> list[str]:
+    """Word-wrap a longer Arabic string for RTL PDFs."""
+    import textwrap
+
+    shaped = _shape(text)
+    return textwrap.wrap(
+        shaped, width=width, break_long_words=False, replace_whitespace=False
+    )
+
+
+# -----------------------------------------------------------------------------
+# 🖨️  Public API
+# -----------------------------------------------------------------------------
+def export_summary_pdf(
+    doctor_name: str,
+    patient_name: str,
+    date: _date,
+    summary: str,
+    transcript: Optional[str] = None,
+) -> str:
+    """
+    Build a mixed-language PDF:
+
+    • English header + summary (LTR, left-aligned)
+    • Arabic transcript heading + transcript text (RTL, right-aligned)
+    """
+    fam, font_path = _get_dejavu_font()
+    pdf = FPDF(format="A4")
+    pdf.set_auto_page_break(auto=True, margin=15)
+    pdf.add_page()
+    pdf.add_font(fam, style="", fname=font_path, uni=True)
+    pdf.set_font(fam, size=12)
+
+    # ------------ English header ------------
+    header_lines = [
+        f"Doctor: {doctor_name}",
+        f"Patient: {patient_name}",
+        f"Date: {date.strftime('%Y-%m-%d')}",
+        "",
+        "Summary:",
+    ]
+    for line in header_lines:
+        pdf.cell(0, 8, line, ln=1, align="L")
+
+    # ------------ English summary -----------
+    pdf.ln(2)
+    pdf.multi_cell(0, 8, summary, align="L")
+
+    # ------------ Arabic transcript ---------
+    if transcript:
+        pdf.ln(6)
+        for seg in _wrap_rtl("Full Transcript:"):  # “Full transcript:” in Arabic
+            pdf.cell(0, 8, seg, ln=1, align="R")
+        pdf.ln(2)
+        for raw in transcript.splitlines():
+            for seg in _wrap_rtl(raw):
+                pdf.cell(0, 8, seg, ln=1, align="R")
+
+    # ------------ Save to a temp file -------
+    with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+        pdf.output(tmp.name)
+        return tmp.name
+
+===== ./nlp/__init__.py =====
+
+===== ./nlp/transcribe.py =====
+# nlp/transcribe.py
+from __future__ import annotations
+import logging
+import time
+from tenacity import retry, wait_exponential, stop_after_attempt
+from utils.openai_client import get_openai_client
+from openai import RateLimitError
+
+TRANSCRIPTION_MODEL = "whisper-1"
+TAGGING_MODEL = "gpt-4o-mini"
+LANGUAGE = "ar"
+
+logger = logging.getLogger(__name__)
+
+
+# ─────────────────────────────────────────────────────────────── Whisper
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=60),  # ↑ 60 s
+)
+def _whisper(client, file):
+    return client.audio.transcriptions.create(
+        model=TRANSCRIPTION_MODEL,
+        file=file,
+        language=LANGUAGE,
+    )
+
+
+# ──────────────────────────────────────────────────────────── Tag speakers
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=60),
+)
+def _tag_chunk(client, chunk: str) -> str:
+    prompt = f"""Segment the following Arabic dialogue into lines, each prefixed by
+either <doctor> or <patient>. Do not add any other text.
+
+Transcript:
+{chunk}
+"""
+    resp = client.chat.completions.create(
+        model=TAGGING_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "أنت مساعد طبي يساعد في وسم كل جملة بعلامة المتكلم.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+        max_tokens=1024,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _chunk(lines, n):
+    for i in range(0, len(lines), n):
+        yield lines[i : i + n]
+
+
+# ───────────────────────────────────────────────────────────── Public API
+def transcribe_audio(path: str) -> str:
+    """
+    1. Whisper transcription  → 2. Speaker tagging (chunk-safe).
+    Returns *""* when Whisper fails so the caller can surface a pipeline error
+    without crashing.
+    """
+    client = get_openai_client()
+
+    # ① Whisper
+    try:
+        start = time.time()
+        with open(path, "rb") as f:
+            txt = _whisper(client, f).text
+        logger.info("Whisper done in %.1fs (%d chars)", time.time() - start, len(txt))
+    except (RateLimitError, Exception):
+        logger.exception("Whisper failed", exc_info=True)
+        return ""  # let caller flag pipeline_error
+
+    # ② Speaker tagging (chunked to avoid context overflow)
+    lines = txt.splitlines()
+    tagged_blocks = []
+    for chunk in _chunk(lines, 180):  # ≈180 lines ≈1500 tokens
+        try:
+            tagged_blocks.append(_tag_chunk(client, "\n".join(chunk)))
+        except Exception as e:
+            logger.warning("Tagging chunk failed (%s), keeping raw lines", e)
+            tagged_blocks.append("\n".join(chunk))
+    return "\n".join(tagged_blocks)
+
+===== ./nlp/summarise.py =====
+# nlp/summarise.py
+from __future__ import annotations
+import json
+import logging
+import textwrap
+from typing import Dict
+
+from utils.llm_helpers import safe_chat_completion
+
+logger = logging.getLogger(__name__)
+
+# Schema keys for structured output (English only)
+SCHEMA_KEYS = [
+    "Patient Complaint",
+    "Clinical Notes",
+    "Diagnosis",
+    "Treatment Plan",
+]
+
+# Enhanced System prompt – explicitly English output instructions
+SYSTEM = textwrap.dedent(
+    """
+    You are an experienced clinical scribe.
+    Read the following Arabic medical dialogue and RETURN valid JSON with exactly these English keys:
+      Patient Complaint
+      Clinical Notes
+      Diagnosis
+      Treatment Plan
+
+    All values MUST be in English only.
+    Always include all keys, even if the value is an empty string.
+    No other text or fields are allowed.
+    """
+).strip()
+
+
+def _empty_note() -> Dict[str, str]:
+    """Return an empty note dict with all required keys."""
+    return {k: "" for k in SCHEMA_KEYS}
+
+
+def summarize_transcript(
+    transcript: str,
+    *,
+    tone: str = "telegraphic",
+    primary_model: str = "gpt-4o-mini",
+    fallback_model: str = "gpt-3.5-turbo",
+    **kwargs,
+) -> str:
+    """
+    Arabic transcript (doctor/patient lines) → English structured note (JSON).
+    Returns *stringified JSON* guaranteed to have every schema key.
+    Raises RuntimeError on repeated LLM failure – caller catches it.
+    """
+
+    # Defensive shorten if transcript is enormous
+    if len(transcript) > 15_000:  # ≈10-12k tokens
+        logger.warning(
+            "Transcript too long (%d chars) – truncating tail", len(transcript)
+        )
+        transcript = transcript[:15_000]
+
+    # Craft prompt
+    style = (
+        "Use short bullet points." if tone == "telegraphic" else "Write full sentences."
+    )
+    user_msg = f"""{style}
+
+Conversation (Arabic) is between triple backticks:
+```{transcript}```
+"""
+
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
+
+    # Call LLM with automatic fallback / retries
+    try:
+        raw = safe_chat_completion(
+            messages,
+            primary_model=primary_model,
+            fallback_model=fallback_model,
+            max_tokens=700,  # breathing room
+            response_format={"type": "json_object"},
+            **kwargs,
+        )
+    except RuntimeError as e:
+        logger.error("LLM summarisation failed: %s", e)
+        raise
+
+    # Post-process / validate
+    note = _empty_note()
+    try:
+        note.update(json.loads(raw))
+    except json.JSONDecodeError:
+        logger.warning("Model returned non-JSON; raw response kept in Diagnosis field")
+        note["Diagnosis"] = raw.strip()
+
+    # Ensure all keys exist (model often misses one when empty)
+    serialised = json.dumps(note, ensure_ascii=False)
+    logger.debug("Final summary JSON: %s", serialised)
+    return serialised
+
+===== ./app.py =====
+import streamlit as st
+
+st.set_page_config(page_title="ANE English Medical Note Taker", layout="centered")
+from db.models import setup_database, get_session_details_by_index
+from ui.session_ui import (
+    session_interaction,
+    _parse_structured_summary,
+    _combine_structured_summary,
+    SUMMARY_LABELS_EN,  # Updated
+)
+from ui.login_ui import login_flow
+from utils.helpers import export_summary_pdf
+from ui.job_manager import render_sidebar
+
+
+setup_database()
+
+if not login_flow():
+    st.warning("⚠️ Please log in first.")
+    st.stop()
+
+render_sidebar()
+st.title("📋 Emergency Medical Note Taker (ANE) - Arabic")
+
+# Navigation
+view_choice = st.sidebar.radio(
+    "Go to:",
+    ("New Session", "📂 Past Sessions"),
+    key="view_choice",  # ★ bind to session_state
+)
+# ----------------- Page: New Session ------------------
+if view_choice == "New Session":
+
+    def reset_session_state_for_new_session():
+        keys_to_clear = [
+            "wizard_step",
+            "doctor_name",
+            "patient_name",
+            "date_selected",
+            "audio_bytes",
+            "audio_file_path",
+            "transcript",
+            "summary_raw",
+            "analysis_ready",
+            "keywords",
+            "diagnoses",
+            "new_session",
+        ]
+        for key in keys_to_clear:
+            st.session_state.pop(key, None)
+
+    if st.sidebar.button("🔁 Start New Session"):
+        reset_session_state_for_new_session()
+        st.session_state["new_session"] = True
+        st.rerun()
+
+    if st.session_state.get("new_session"):
+        session_interaction()
+
+# ----------------- Page: Past Sessions ------------------
+elif view_choice == "📂 Past Sessions":
+    st.header("📂 Previous Sessions")
+
+    all_sessions = get_session_details_by_index(st.session_state.user_id)
+    preset = None
+    target_id = st.session_state.pop("selected_past_session_id", None)
+    if target_id is not None:
+        for i, row in enumerate(all_sessions):
+            if row[0] == target_id:  # row[0] is session_id
+                preset = i
+                break
+    if not all_sessions:
+        st.info("No saved sessions found.")
+        st.stop()
+
+    session_labels = [
+        f"{row[1].strftime('%Y-%m-%d')} – 👨‍⚕️ {row[2]} | 👤 {row[3]}"
+        for row in all_sessions
+    ]
+    selected_idx = st.selectbox(
+        "Select a previous session:",
+        range(len(session_labels)),
+        index=preset or 0,
+        format_func=lambda i: session_labels[i],
+    )
+
+    session_id, date_sel, doctor_name, patient_name, transcript, summary = all_sessions[
+        selected_idx
+    ]
+
+    st.subheader("📄 Full Transcript")
+    st.write(transcript)
+
+    st.subheader("📝 Session Summary")
+    sections = _parse_structured_summary(summary)
+    updated: dict[str, str] = {}
+    for lbl in SUMMARY_LABELS_EN:
+        key = f"past_summary_{lbl}"
+        updated[lbl] = st.text_area(
+            lbl + ":", value=sections.get(lbl, ""), key=key, height=90
+        )
+
+    if st.button("📄 Generate / Refresh PDF", key="past_pdf_btn"):
+        combined = _combine_structured_summary(updated)
+        pdf_path = export_summary_pdf(
+            doctor_name, patient_name, date_sel, combined, transcript
+        )
+        st.session_state["past_pdf_path"] = pdf_path
+        st.success("PDF ready – download below or send by e-mail.")
+        st.rerun()
+
+    if pdf_path := st.session_state.get("past_pdf_path"):
+        col_dl, col_mail = st.columns(2)
+
+        # 1️⃣  Download
+        with col_dl, open(pdf_path, "rb") as fp:
+            st.download_button(
+                "📥 Download Summary",
+                fp,
+                file_name="summary.pdf",
+                key="download_btn",
+            )
+
+        # 2️⃣  E-mail
+        with col_mail:
+            default_email = st.session_state.get(
+                "user_email"
+            ) or st.session_state.get(  # set at login
+                "user_name", ""
+            )
+            to_addr = st.text_input(
+                "✉️ Send to (email)",
+                value=default_email,
+                key="past_send_to_email",
+            )
+            btn_disabled = not to_addr.strip()
+            if st.button("📧 Email PDF", disabled=btn_disabled, key="past_email_btn"):
+                from utils.email_utils import send_pdf
+
+                try:
+                    send_pdf(
+                        to_email=to_addr,
+                        pdf_path=pdf_path,
+                        subject="Medical Session Summary",
+                        body="Attached is the PDF summary you requested.",
+                    )
+                    st.success(f"Sent to {to_addr}")
+                except RuntimeError as e:
+                    st.error(str(e))
+
+===== ./db/models.py =====
+from passlib.hash import bcrypt
+from db.pool import get_conn, put_conn
+import json
+
+
+def setup_database():
+    conn = get_conn()
+    cur = conn.cursor()
+
+    # Users table
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS users (
+        id SERIAL PRIMARY KEY,
+        email TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"""
+    )
+
+    # Doctors table
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS doctors (
+        id SERIAL PRIMARY KEY,
+        name TEXT UNIQUE,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"""
+    )
+
+    # Patients table
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS patients (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );"""
+    )
+
+    # Sessions table (with structured summary fields)
+    cur.execute(
+        """
+    CREATE TABLE IF NOT EXISTS sessions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id),
+        doctor_id INTEGER REFERENCES doctors(id),
+        patient_id INTEGER REFERENCES patients(id),
+        date TIMESTAMP,
+        transcript TEXT,
+        patient_complaint TEXT,
+        clinical_notes TEXT,
+        diagnosis TEXT,
+        treatment_plan TEXT,
+        audio_path TEXT,
+        audio_hash TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE (user_id, audio_hash)
+    );"""
+    )
+
+    conn.commit()
+    cur.close()
+    put_conn(conn)
+
+
+def create_user(email: str, password: str) -> int:
+    """Hash the password and insert a new user; returns user id."""
+    pwd_hash = bcrypt.hash(password)
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT INTO users (email, password_hash) VALUES (%s, %s) ON CONFLICT (email) DO NOTHING",
+        (email, pwd_hash),
+    )
+    conn.commit()
+    cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+    user_id = cur.fetchone()[0]
+    cur.close()
+    put_conn(conn)
+    return user_id
+
+
+def authenticate_user(email: str, password: str) -> bool:
+    """Return True if email exists and password matches."""
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT password_hash FROM users WHERE email = %s", (email,))
+    row = cur.fetchone()
+    cur.close()
+    put_conn(conn)
+    if not row:
+        return False
+    stored_hash = row[0]
+    return bcrypt.verify(password, stored_hash)
+
+
+def insert_doctor(name: str) -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO doctors (name)
+        VALUES (%s)
+        ON CONFLICT (name) DO UPDATE SET name = EXCLUDED.name
+        RETURNING id
+        """,
+        (name,),
+    )
+
+    doctor_id = cur.fetchone()[0]
+
+    conn.commit()
+    cur.close()
+    put_conn(conn)
+    return doctor_id
+
+
+def insert_patient(name: str) -> int:
+    """
+    Inserts a new patient record and returns its ID.
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO patients (name)
+        VALUES (%s)
+        RETURNING id
+        """,
+        (name,),
+    )
+    patient_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    put_conn(conn)
+    return patient_id
+
+
+def insert_session(
+    user_id,
+    doctor_id,
+    patient_id,
+    date,
+    transcript,
+    patient_complaint,
+    clinical_notes,
+    diagnosis,
+    treatment_plan,
+    audio_path,
+    audio_hash,
+):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        INSERT INTO sessions (
+            user_id, doctor_id, patient_id, date,
+            transcript, patient_complaint, clinical_notes,
+            diagnosis, treatment_plan,
+            audio_path, audio_hash
+        )
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        RETURNING id
+        """,
+        (
+            user_id,
+            doctor_id,
+            patient_id,
+            date,
+            transcript,
+            patient_complaint,
+            clinical_notes,
+            diagnosis,
+            treatment_plan,
+            audio_path,
+            audio_hash,
+        ),
+    )
+    sess_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    put_conn(conn)
+    return sess_id
+
+
+def get_patient_names():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT name FROM patients")
+    names = [row[0] for row in cur.fetchall()]
+    cur.close()
+    put_conn(conn)
+    return names
+
+
+def get_recent_sessions(user_id, limit=5):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT s.date, p.name, s.summary
+        FROM sessions s
+        JOIN patients p ON s.patient_id = p.id
+        WHERE s.user_id = %s
+        ORDER BY s.date DESC
+        LIMIT %s
+        """,
+        (user_id, limit),
+    )
+    rows = cur.fetchall()
+    cur.close()
+    put_conn(conn)
+    return rows
+
+
+def get_user_id(email: str) -> int:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT id FROM users WHERE email = %s", (email,))
+    user_id = cur.fetchone()[0]
+    cur.close()
+    put_conn(conn)
+    return user_id
+
+
+def user_exists(email: str) -> bool:
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM users WHERE email = %s", (email,))
+    exists = cur.fetchone() is not None
+    cur.close()
+    put_conn(conn)
+    return exists
+
+
+def get_session_details_by_index(user_id: int, limit: int = 20):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT s.id, s.date, d.name, p.name, s.transcript,
+               s.patient_complaint, s.clinical_notes, s.diagnosis, s.treatment_plan
+        FROM sessions s
+        JOIN doctors d ON s.doctor_id = d.id
+        JOIN patients p ON s.patient_id = p.id
+        WHERE s.user_id = %s
+        ORDER BY s.date DESC
+        LIMIT %s
+        """,
+        (user_id, limit),
+    )
+    sessions = cur.fetchall()
+    cur.close()
+    put_conn(conn)
+
+    formatted_sessions = []
+    for sess in sessions:
+        sess_id, date, doc_name, pat_name, tr, pc, cn, diag, tp = sess
+        summary = json.dumps(
+            {
+                "Patient Complaint": pc or "No readout",
+                "Clinical Notes": cn or "No readout",
+                "Diagnosis": diag or "No readout",
+                "Treatment Plan": tp or "No readout",
+            },
+            ensure_ascii=False,
+        )
+        formatted_sessions.append((sess_id, date, doc_name, pat_name, tr, summary))
+
+    return formatted_sessions
+
+
+def get_existing_session_by_hash(user_id: int, audio_hash: str):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT transcript, patient_complaint, clinical_notes, diagnosis, treatment_plan, date
+        FROM sessions
+        WHERE user_id = %s AND audio_hash = %s
+        ORDER BY date DESC LIMIT 1
+        """,
+        (user_id, audio_hash),
+    )
+    row = cur.fetchone()
+    cur.close()
+    put_conn(conn)
+    if not row:
+        return None
+    tr, pc, cn, diag, tp, dt = row
+    summary = json.dumps(
+        {
+            "Patient Complaint": pc or "No readout",
+            "Clinical Notes": cn or "No readout",
+            "Diagnosis": diag or "No readout",
+            "Treatment Plan": tp or "No readout",
+        },
+        ensure_ascii=False,
+    )
+    return dict(transcript=tr, summary_raw=summary, date=dt)
+
+===== ./db/__init__.py =====
+
+===== ./db/pool.py =====
+from __future__ import annotations
+from psycopg2.pool import SimpleConnectionPool
+import streamlit as st
+
+# ------------------------------------------------------------------------
+# 1️⃣  Configuration pulled from st.secrets (works both local & Cloud)
+# ------------------------------------------------------------------------
+DB_CONFIG = {
+    "dbname": st.secrets["POSTGRES_DB"],
+    "user": st.secrets["POSTGRES_USER"],
+    "password": st.secrets["POSTGRES_PASSWORD"],
+    "host": st.secrets["POSTGRES_HOST"],
+    "port": st.secrets["POSTGRES_PORT"],
+    "sslmode": "require",
+}
+
+# ------------------------------------------------------------------------
+# 2️⃣  One global pool shared by the whole process (thread-safe in psycopg2)
+# ------------------------------------------------------------------------
+_POOL: SimpleConnectionPool | None = None
+
+
+def _get_pool() -> SimpleConnectionPool:
+    global _POOL
+    if _POOL is None:
+        _POOL = SimpleConnectionPool(minconn=1, maxconn=5, **DB_CONFIG)
+    return _POOL
+
+
+def get_conn():
+    """Borrow a connection from the pool."""
+    return _get_pool().getconn()
+
+
+def put_conn(conn):
+    """Return a connection to the pool."""
+    _get_pool().putconn(conn)
