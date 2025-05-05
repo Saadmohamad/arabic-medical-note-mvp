@@ -1,71 +1,103 @@
-from typing import Literal
-from utils.openai_client import get_openai_client
+# nlp/summarise.py
+from __future__ import annotations
+import json
+import logging
+import textwrap
+from typing import Dict
+
+from utils.llm_helpers import safe_chat_completion
+
+logger = logging.getLogger(__name__)
+
+# Schema keys for structured output (English only)
+SCHEMA_KEYS = [
+    "Patient Complaint",
+    "Clinical Notes",
+    "Diagnosis",
+    "Treatment Plan",
+]
+
+# Enhanced System prompt – explicitly English output instructions
+SYSTEM = textwrap.dedent(
+    """
+    You are an experienced clinical scribe.
+    Read the following Arabic medical dialogue and RETURN valid JSON with exactly these English keys:
+      Patient Complaint
+      Clinical Notes
+      Diagnosis
+      Treatment Plan
+
+    All values MUST be in English only.
+    Always include all keys, even if the value is an empty string.
+    No other text or fields are allowed.
+    """
+).strip()
 
 
-client = get_openai_client()
+def _empty_note() -> Dict[str, str]:
+    """Return an empty note dict with all required keys."""
+    return {k: "" for k in SCHEMA_KEYS}
 
 
 def summarize_transcript(
     transcript: str,
     *,
-    model: str = "gpt-4o-mini",
-    temperature: float = 0.2,
-    max_tokens: int = 512,
-    tone: Literal["telegraphic", "full"] = "telegraphic",
+    tone: str = "telegraphic",
+    primary_model: str = "gpt-4o-mini",
+    fallback_model: str = "gpt-3.5-turbo",
+    **kwargs,
 ) -> str:
     """
-    Convert an **Arabic** doctor-patient conversation into an English clinical note.
-
-    Parameters
-    ----------
-    transcript : str
-        Arabic transcript, already tagged <doctor>/<patient>.
-    model : str
-        Chat‐completion model to use.
-    temperature : float
-        A touch of temperature helps the model re-phrase naturally without hallucinating.
-    max_tokens : int
-        Hard cap on summary length.
-    tone : {'telegraphic', 'full'}
-        'telegraphic' gives short bullet points; 'full' gives prose sentences.
+    Arabic transcript (doctor/patient lines) → English structured note (JSON).
+    Returns *stringified JSON* guaranteed to have every schema key.
+    Raises RuntimeError on repeated LLM failure – caller catches it.
     """
-    style_hint = (
-        "Use terse, bullet-point phrases."
-        if tone == "telegraphic"
-        else "Write complete sentences that flow naturally."
+
+    # Defensive shorten if transcript is enormous
+    if len(transcript) > 15_000:  # ≈10-12k tokens
+        logger.warning(
+            "Transcript too long (%d chars) – truncating tail", len(transcript)
+        )
+        transcript = transcript[:15_000]
+
+    # Craft prompt
+    style = (
+        "Use short bullet points." if tone == "telegraphic" else "Write full sentences."
     )
+    user_msg = f"""{style}
 
-    user_prompt = f"""You are a medical assistant.
-The following conversation is in Arabic—read it carefully but **write your answer in English**.
-
-Summarize the dialogue into structured clinical notes using *exactly* this template:
-- Patient Complaint:
-- Clinical Notes:
-- Diagnosis (if any):
-- Treatment Plan:
-
-{style_hint}
-
-Conversation (Arabic):
-{transcript}
+Conversation (Arabic) is between triple backticks:
+```{transcript}```
 """
 
+    messages = [
+        {"role": "system", "content": SYSTEM},
+        {"role": "user", "content": user_msg},
+    ]
+
+    # Call LLM with automatic fallback / retries
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[
-                {
-                    "role": "system",
-                    "content": (
-                        "You are an experienced clinical scribe. "
-                        "Stay faithful to the source; do not invent facts."
-                    ),
-                },
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
+        raw = safe_chat_completion(
+            messages,
+            primary_model=primary_model,
+            fallback_model=fallback_model,
+            max_tokens=700,  # breathing room
+            response_format={"type": "json_object"},
+            **kwargs,
         )
-        return resp.choices[0].message.content.strip()
-    except Exception as e:
-        raise RuntimeError(f"Summarization failed: {e}")
+    except RuntimeError as e:
+        logger.error("LLM summarisation failed: %s", e)
+        raise
+
+    # Post-process / validate
+    note = _empty_note()
+    try:
+        note.update(json.loads(raw))
+    except json.JSONDecodeError:
+        logger.warning("Model returned non-JSON; raw response kept in Diagnosis field")
+        note["Diagnosis"] = raw.strip()
+
+    # Ensure all keys exist (model often misses one when empty)
+    serialised = json.dumps(note, ensure_ascii=False)
+    logger.debug("Final summary JSON: %s", serialised)
+    return serialised

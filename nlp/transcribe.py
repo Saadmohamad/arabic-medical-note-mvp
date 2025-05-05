@@ -1,66 +1,91 @@
 # nlp/transcribe.py
 from __future__ import annotations
-from utils.openai_client import get_openai_client as _get_client
+import logging
+import time
+from tenacity import retry, wait_exponential, stop_after_attempt
+from utils.openai_client import get_openai_client
+from openai import RateLimitError
+
+TRANSCRIPTION_MODEL = "whisper-1"
+TAGGING_MODEL = "gpt-4o-mini"
+LANGUAGE = "ar"
+
+logger = logging.getLogger(__name__)
 
 
-def _fast_stream(client, wav_path: str) -> str:
-    """Streaming GPT-4o-mini transcription, plain text."""
-    with open(wav_path, "rb") as f:
-        chunks = client.audio.transcriptions.create(
-            model="gpt-4o-mini-transcribe",
-            file=f,
-            language="ar",
-            stream=True,
-            response_format="text",  # fastest path (no timestamps)
-        )
-        return "".join(chunk.text for chunk in chunks)
+# ─────────────────────────────────────────────────────────────── Whisper
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=60),  # ↑ 60 s
+)
+def _whisper(client, file):
+    return client.audio.transcriptions.create(
+        model=TRANSCRIPTION_MODEL,
+        file=file,
+        language=LANGUAGE,
+    )
 
 
-def transcribe_audio(audio_file_path: str) -> str:
+# ──────────────────────────────────────────────────────────── Tag speakers
+@retry(
+    reraise=True,
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=2, min=2, max=60),
+)
+def _tag_chunk(client, chunk: str) -> str:
+    prompt = f"""Segment the following Arabic dialogue into lines, each prefixed by
+either <doctor> or <patient>. Do not add any other text.
+
+Transcript:
+{chunk}
+"""
+    resp = client.chat.completions.create(
+        model=TAGGING_MODEL,
+        messages=[
+            {
+                "role": "system",
+                "content": "أنت مساعد طبي يساعد في وسم كل جملة بعلامة المتكلم.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        temperature=0.0,
+        max_tokens=1024,
+    )
+    return resp.choices[0].message.content.strip()
+
+
+def _chunk(lines, n):
+    for i in range(0, len(lines), n):
+        yield lines[i : i + n]
+
+
+# ───────────────────────────────────────────────────────────── Public API
+def transcribe_audio(path: str) -> str:
     """
-    ① try GPT-4o-mini-transcribe (streaming)
-    ② fall back to Whisper-1 if needed
-    ③ tag <doctor>/<patient> using GPT-4o-mini
+    1. Whisper transcription  → 2. Speaker tagging (chunk-safe).
+    Returns *""* when Whisper fails so the caller can surface a pipeline error
+    without crashing.
     """
-    client = _get_client()
+    client = get_openai_client()
 
-    # ① fast path
+    # ① Whisper
     try:
-        raw = _fast_stream(client, audio_file_path)
-    except Exception:  # noqa: BLE001  (brittle-protect)
-        # ② fallback
-        with open(audio_file_path, "rb") as f:
-            raw = client.audio.transcriptions.create(
-                model="whisper-1",
-                file=f,
-                language="ar",
-            ).text
+        start = time.time()
+        with open(path, "rb") as f:
+            txt = _whisper(client, f).text
+        logger.info("Whisper done in %.1fs (%d chars)", time.time() - start, len(txt))
+    except (RateLimitError, Exception):
+        logger.exception("Whisper failed", exc_info=True)
+        return ""  # let caller flag pipeline_error
 
-    # ③ speaker tagging
-    prompt = f"""
-    Segment the following Arabic dialogue into lines, each prefixed by either
-    <doctor> or <patient>. Do not add any other text.
-
-    Transcript:
-    {raw}
-    """
-    try:
-        tagged = (
-            client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "أنت مساعد طبي يساعد في وسم كل جملة بعلامة المتكلم.",
-                    },
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=0.0,
-                max_tokens=1024,
-            )
-            .choices[0]
-            .message.content.strip()
-        )
-        return tagged
-    except Exception:
-        return raw
+    # ② Speaker tagging (chunked to avoid context overflow)
+    lines = txt.splitlines()
+    tagged_blocks = []
+    for chunk in _chunk(lines, 180):  # ≈180 lines ≈1500 tokens
+        try:
+            tagged_blocks.append(_tag_chunk(client, "\n".join(chunk)))
+        except Exception as e:
+            logger.warning("Tagging chunk failed (%s), keeping raw lines", e)
+            tagged_blocks.append("\n".join(chunk))
+    return "\n".join(tagged_blocks)

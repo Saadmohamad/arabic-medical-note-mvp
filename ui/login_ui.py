@@ -2,10 +2,8 @@ import streamlit as st
 from db.models import authenticate_user, get_user_id
 
 
-def clear_session():
-    keys = list(st.session_state.keys())
-    for key in keys:
-        del st.session_state[key]
+def clear_session() -> None:
+    st.session_state.clear()
 
 
 def login_flow() -> bool:
