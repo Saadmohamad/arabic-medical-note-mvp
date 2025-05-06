@@ -53,7 +53,7 @@ def export_summary_pdf(
     doctor_name: str,
     patient_name: str,
     date: _date,
-    summary: str,
+    summary: dict,
     transcript: Optional[str] = None,
 ) -> str:
     """
@@ -75,14 +75,22 @@ def export_summary_pdf(
         f"Patient: {patient_name}",
         f"Date: {date.strftime('%Y-%m-%d')}",
         "",
-        "Summary:",
     ]
     for line in header_lines:
         pdf.cell(0, 8, line, ln=1, align="L")
 
     # ------------ English summary -----------
     pdf.ln(2)
-    pdf.multi_cell(0, 8, summary, align="L")
+    for section_title, content in summary.items():
+        content = str(content).strip()
+        if content:
+            pdf.set_font(fam, style="", size=12)
+            pdf.cell(0, 10, f"{section_title}:", ln=1)
+
+            pdf.set_font(fam, style="", size=12)
+            indented_content = "\n".join(f"    {line}" for line in content.splitlines())
+            pdf.multi_cell(0, 8, indented_content, align="L")
+            pdf.ln(2)
 
     # ------------ Arabic transcript ---------
     if transcript:

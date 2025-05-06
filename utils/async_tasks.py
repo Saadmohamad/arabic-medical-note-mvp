@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor, Future
 from typing import Any, Dict
 
 from db.models import (
@@ -17,11 +16,6 @@ from nlp.summarise import summarize_transcript
 from utils.audio_io import file_sha256
 
 logger = logging.getLogger(__name__)
-
-# ─────────────────────────────────────────────────────────────────────────────
-# Thread pool for background execution
-# ─────────────────────────────────────────────────────────────────────────────
-_EXECUTOR: ThreadPoolExecutor = ThreadPoolExecutor(max_workers=2)
 
 
 def _heavy_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
@@ -74,12 +68,11 @@ def _heavy_pipeline(payload: Dict[str, Any]) -> Dict[str, Any]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public API: enqueue the above on a worker thread
+# Public API: synchronous execution for UI
 # ─────────────────────────────────────────────────────────────────────────────
-def enqueue_job(payload: Dict[str, Any]) -> Future[Dict[str, Any]]:
+def process_session_sync(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Schedule `_heavy_pipeline` to run in the background.
-
-    Returns a Future whose result() is the enriched payload.
+    Run the full transcription -> summarisation -> persistence pipeline synchronously.
+    Mirrors the background `_heavy_pipeline` logic but returns directly.
     """
-    return _EXECUTOR.submit(_heavy_pipeline, payload)
+    return _heavy_pipeline(payload)
