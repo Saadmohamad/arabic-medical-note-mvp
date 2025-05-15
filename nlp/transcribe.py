@@ -1,4 +1,3 @@
-# nlp/transcribe.py
 from __future__ import annotations
 import logging
 import time
@@ -6,7 +5,7 @@ from tenacity import retry, wait_exponential, stop_after_attempt
 from utils.openai_client import get_openai_client
 from openai import RateLimitError
 
-TRANSCRIPTION_MODEL = "whisper-1"
+TRANSCRIPTION_MODEL = "gpt-4o-transcribe"
 TAGGING_MODEL = "gpt-4o-mini"
 LANGUAGE = "ar"
 
@@ -19,12 +18,23 @@ logger = logging.getLogger(__name__)
     stop=stop_after_attempt(3),
     wait=wait_exponential(multiplier=2, min=2, max=60),  # ↑ 60 s
 )
-def _whisper(client, file):
-    return client.audio.transcriptions.create(
+def _whisper(client, file, prompt=""):
+    kwargs = dict(
         model=TRANSCRIPTION_MODEL,
         file=file,
         language=LANGUAGE,
+        temperature=0,
+        prompt=prompt,
     )
+
+    # gpt-4o-transcribe & gpt-4o-mini-transcribe only do "json"/"text"
+    if TRANSCRIPTION_MODEL.startswith("gpt-4o"):
+        kwargs["response_format"] = "json"  # segments not available
+    else:
+        kwargs["response_format"] = "verbose_json"
+        kwargs["timestamp_granularities"] = ["segment"]
+
+    return client.audio.transcriptions.create(**kwargs)
 
 
 # ──────────────────────────────────────────────────────────── Tag speakers
@@ -61,31 +71,49 @@ def _chunk(lines, n):
 
 
 # ───────────────────────────────────────────────────────────── Public API
-def transcribe_audio(path: str) -> str:
+def transcribe_audio(path: str, tagging: bool = False) -> str:
     """
-    1. Whisper transcription  → 2. Speaker tagging (chunk-safe).
-    Returns *""* when Whisper fails so the caller can surface a pipeline error
-    without crashing.
+    ① Whisper / gpt-4o transcription  → ② optional speaker tagging.
+    Returns "" on Whisper failure so the caller can surface a pipeline error.
     """
     client = get_openai_client()
+    rolling_prompt = ""
 
-    # ① Whisper
     try:
         start = time.time()
         with open(path, "rb") as f:
-            txt = _whisper(client, f).text
-        logger.info("Whisper done in %.1fs (%d chars)", time.time() - start, len(txt))
-    except (RateLimitError, Exception):
-        logger.exception("Whisper failed", exc_info=True)
-        return ""  # let caller flag pipeline_error
+            resp = _whisper(client, f, prompt=rolling_prompt)
 
-    # ② Speaker tagging (chunked to avoid context overflow)
-    lines = txt.splitlines()
+        # ─── normalise the response to plain text ────────────────────────────
+        if hasattr(resp, "segments"):  # whisper-1 (verbose_json)
+            txt = "\n".join(seg["text"] for seg in resp.segments)
+        else:  # gpt-4o-transcribe (json/text)
+            txt = resp.text
+
+        logger.info(
+            "Transcribe done in %.1fs (%d chars)", time.time() - start, len(txt)
+        )
+
+        # keep the last ~2 000 chars as rolling prompt for any *next* chunk
+        rolling_prompt = (rolling_prompt + txt)[-2000:]
+
+    except RateLimitError:
+        logger.warning("Transcription rate-limited", exc_info=True)
+        return ""
+    except Exception:
+        logger.exception("Transcription failed", exc_info=True)
+        raise  # let real bugs surface instead of silent "" return
+
+    # ─── optional speaker tagging ───────────────────────────────────────────
+    if not tagging:
+        return txt
+
     tagged_blocks = []
-    for chunk in _chunk(lines, 180):  # ≈180 lines ≈1500 tokens
+    for chunk in _chunk(txt.splitlines(), 100):  # ≤100 lines ≈ 800 tokens
         try:
             tagged_blocks.append(_tag_chunk(client, "\n".join(chunk)))
         except Exception as e:
-            logger.warning("Tagging chunk failed (%s), keeping raw lines", e)
+            logger.warning("Tagging chunk failed (%s); keeping raw lines", e)
             tagged_blocks.append("\n".join(chunk))
+
     return "\n".join(tagged_blocks)
